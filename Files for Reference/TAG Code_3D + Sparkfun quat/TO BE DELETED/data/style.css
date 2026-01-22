@@ -1,0 +1,233 @@
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    background-color: #f0f2f5;
+    margin: 0;
+    padding: 20px;
+    color: #333;
+}
+
+h1 {
+    text-align: center;
+    color: #1c1e21;
+}
+
+/* New Layout Styles */
+#map-container {
+    width: 100%;
+    height: 40vh; /* 40% of the viewport height */
+    margin-bottom: 20px;
+}
+
+.main-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+    justify-content: center;
+}
+
+.left-column {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    flex: 2; /* Takes up 2/3 of the space */
+    min-width: 400px;
+}
+
+.right-column {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    flex: 1; /* Takes up 1/3 of the space */
+    min-width: 320px;
+}
+
+.card {
+    background-color: #fff;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    padding: 20px;
+    overflow: hidden;
+}
+
+/* Make the 3D canvas containers larger */
+.canvas-container {
+    height: 400px; /* Increased height */
+    width: 100%;
+}
+
+#map {
+    height: 100%;
+    width: 100%;
+    border-radius: 8px;
+}
+
+#compass-container h2, #data-container h2, #controls-container h2, #gps-container h2 {
+    margin-top: 0;
+    border-bottom: 1px solid #ddd;
+    padding-bottom: 10px;
+    font-size: 1.2em;
+}
+
+.compass {
+    position: relative;
+    width: 150px;
+    height: 150px;
+    margin: 20px auto;
+    /* Add numbers to the compass */
+    background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="150" height="150"><text x="70" y="15" font-size="12" fill="%23333">N</text><text x="105" y="25" font-size="10" fill="%23666">45</text><text x="135" y="80" font-size="12" fill="%23333">E</text><text x="105" y="135" font-size="10" fill="%23666">135</text><text x="70" y="145" font-size="12" fill="%23333">S</text><text x="25" y="135" font-size="10" fill="%23666">225</text><text x="5" y="80" font-size="12" fill="%23333">W</text><text x="25" y="25" font-size="10" fill="%23666">315</text></svg>');
+}
+
+.arrow {
+    position: absolute;
+    width: 0;
+    height: 0;
+    border-left: 10px solid transparent;
+    border-right: 10px solid transparent;
+    border-bottom: 75px solid #e74c3c;
+    top: 0;
+    left: 50%;
+    transform-origin: 50% 100%;
+    transform: translateX(-50%) rotate(0deg);
+    transition: transform 0.2s ease-in-out;
+    z-index: 2;
+}
+
+.compass-circle {
+    position: absolute;
+    width: 150px;
+    height: 150px;
+    border: 2px solid #333;
+    border-radius: 50%;
+    box-sizing: border-box;
+}
+
+.heading-display {
+    text-align: center;
+    margin-top: 10px;
+}
+
+.heading-display p {
+    margin: 5px 0;
+    font-weight: bold;
+}
+
+/* Remove the old compass rose style */
+.compass-rose {
+    display: none;
+}
+
+/* Table Styles */
+#data-container table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 15px;
+}
+
+#data-container th, #data-container td {
+    padding: 8px 12px;
+    text-align: left;
+    border-bottom: 1px solid #eee;
+}
+
+#data-container th {
+    font-weight: bold;
+    background-color: #f7f7f7;
+}
+
+#data-container td:not(:first-child) {
+    text-align: right;
+    font-family: 'Courier New', Courier, monospace;
+}
+
+#data-container p {
+    margin: 10px 0;
+}
+
+#data-container hr {
+    border: 0;
+    border-top: 1px solid #eee;
+    margin: 15px 0;
+}
+
+/* Calibration values container */
+#calibration-values-container {
+    margin-top: 20px;
+}
+
+#calibration-values-container table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+#calibration-values-container th {
+    background-color: #f0f0f0;
+    padding: 8px;
+    text-align: left;
+}
+
+#calibration-values-container td {
+    padding: 6px;
+    border-bottom: 1px solid #ddd;
+}
+
+/* Button container styling */
+.button-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.button-container button {
+    flex: 1;
+    min-width: 120px;
+}
+
+/* Remove old layout styles that are no longer used */
+.container, .main-content, .sidebar, #3d-container {
+    display: none;
+}
+
+.switch {
+    position: relative;
+    display: inline-block;
+    width: 60px;
+    height: 34px;
+    vertical-align: middle;
+    margin-right: 10px;
+}
+
+.slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #ccc;
+    transition: .4s;
+    border-radius: 34px;
+}
+
+.slider:before {
+    position: absolute;
+    content: "";
+    height: 26px;
+    width: 26px;
+    left: 4px;
+    bottom: 4px;
+    background-color: white;
+    transition: .4s;
+    border-radius: 50%;
+}
+
+input:checked + .slider {
+    background-color: #2196F3;
+}
+
+input:checked + .slider:before {
+    transform: translateX(26px);
+}
+
+#controls-container label[for="led-toggle"] {
+    vertical-align: middle;
+}

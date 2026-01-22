@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 IMU & GPS Visualization</title>
+    <link rel="stylesheet" href="leaflet.css">
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="leaflet.js"></script>
+</head>
+<body>
+    <h1>ESP32 IMU & GPS Real-Time Visualization</h1>
+
+    <!-- Top section for the map -->
+    <div id="map-container" class="card">
+        <div id="map"></div>
+    </div>
+
+    <!-- Main content area with two columns -->
+    <div class="main-container">
+        <!-- Left column for 3D visualizations -->
+        <div class="left-column">
+            <div id="cube1-container" class="card">
+                <h2>Filtered (9-DOF)</h2>
+                <div id="3d-container-1" class="canvas-container"></div>
+            </div>
+            <div id="cube2-container" class="card">
+                <h2>Basic (6-DOF)</h2>
+                <div id="3d-container-2" class="canvas-container"></div>
+            </div>
+        </div>
+
+        <!-- Right column for data and controls -->
+        <div class="right-column">
+            <div id="compass-container" class="card">
+                <h2>Compass</h2>
+                <div class="compass">
+                    <!-- Compass rose with numbers will be added via CSS/JS -->
+                    <div class="arrow"></div>
+                    <div class="compass-circle"></div>
+                    <div class="compass-rose"></div>
+                </div>
+                <div class="heading-display">
+                    <p><strong>Magnetometer Heading:</strong> <span id="magnetometer-heading">0.00</span>&deg;</p>
+                    <p><strong>Mag Heading:</strong> <span id="mag-heading">0.00</span>&deg;</p>
+                    <p><strong>True Heading:</strong> <span id="true-heading">0.00</span>&deg;</p>
+                </div>
+            </div>
+
+            <div id="data-container" class="card">
+                <h2>Sensor Data</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Sensor</th>
+                            <th>Raw</th>
+                            <th>Calibrated</th>
+                            <th>Filtered (Euler)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>Accel X</strong></td>
+                            <td id="raw-ax">0.00</td>
+                            <td id="cal-ax">0.00</td>
+                            <td rowspan="3"><strong>Roll:</strong> <span id="roll">0.00</span>&deg;</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Accel Y</strong></td>
+                            <td id="raw-ay">0.00</td>
+                            <td id="cal-ay">0.00</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Accel Z</strong></td>
+                            <td id="raw-az">0.00</td>
+                            <td id="cal-az">0.00</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Gyro X</strong></td>
+                            <td id="raw-gx">0.00</td>
+                            <td id="cal-gx">0.00</td>
+                            <td rowspan="3"><strong>Pitch:</strong> <span id="pitch">0.00</span>&deg;</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Gyro Y</strong></td>
+                            <td id="raw-gy">0.00</td>
+                            <td id="cal-gy">0.00</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Gyro Z</strong></td>
+                            <td id="raw-gz">0.00</td>
+                            <td id="cal-gz">0.00</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Mag X</strong></td>
+                            <td id="raw-mx">0.00</td>
+                            <td id="cal-mx">0.00</td>
+                            <td rowspan="3"><strong>Yaw:</strong> <span id="yaw">0.00</span>&deg;</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Mag Y</strong></td>
+                            <td id="raw-my">0.00</td>
+                            <td id="cal-my">0.00</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Mag Z</strong></td>
+                            <td id="raw-mz">0.00</td>
+                            <td id="cal-mz">0.00</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div id="calibration-values-container" class="card" style="display: none;">
+                <h2>Calibration Values</h2>
+                <div class="cal-values-content">
+                    <table>
+                        <tr>
+                            <th colspan="2">Accelerometer Bias</th>
+                        </tr>
+                        <tr>
+                            <td>X:</td>
+                            <td id="accel-bias-x">0.00</td>
+                        </tr>
+                        <tr>
+                            <td>Y:</td>
+                            <td id="accel-bias-y">0.00</td>
+                        </tr>
+                        <tr>
+                            <td>Z:</td>
+                            <td id="accel-bias-z">0.00</td>
+                        </tr>
+                        <tr>
+                            <th colspan="2">Gyroscope Bias</th>
+                        </tr>
+                        <tr>
+                            <td>X:</td>
+                            <td id="gyro-bias-x">0.00</td>
+                        </tr>
+                        <tr>
+                            <td>Y:</td>
+                            <td id="gyro-bias-y">0.00</td>
+                        </tr>
+                        <tr>
+                            <td>Z:</td>
+                            <td id="gyro-bias-z">0.00</td>
+                        </tr>
+                        <tr>
+                            <th colspan="2">Magnetometer Bias</th>
+                        </tr>
+                        <tr>
+                            <td>X:</td>
+                            <td id="mag-bias-x">0.00</td>
+                        </tr>
+                        <tr>
+                            <td>Y:</td>
+                            <td id="mag-bias-y">0.00</td>
+                        </tr>
+                        <tr>
+                            <td>Z:</td>
+                            <td id="mag-bias-z">0.00</td>
+                        </tr>
+                        <tr>
+                            <th colspan="2">Magnetometer Scale</th>
+                        </tr>
+                        <tr>
+                            <td>X:</td>
+                            <td id="mag-scale-x">1.00</td>
+                        </tr>
+                        <tr>
+                            <td>Y:</td>
+                            <td id="mag-scale-y">1.00</td>
+                        </tr>
+                        <tr>
+                            <td>Z:</td>
+                            <td id="mag-scale-z">1.00</td>
+                        </tr>
+                    </table>
+                </div>
+            </div>
+
+            <div id="gps-container" class="card">
+                 <h2>GPS Data</h2>
+                 <p><strong>Latitude:</strong> <span id="lat">N/A</span></p>
+                 <p><strong>Longitude:</strong> <span id="lon">N/A</span></p>
+                 <p><strong>Altitude:</strong> <span id="alt">N/A</span> m</p>
+                 <p><strong>Satellites:</strong> <span id="sats">N/A</span></p>
+            </div>
+
+            <div id="controls-container" class="card">
+                <h2>Controls</h2>
+                <div class="button-container">
+                    <button id="stream-toggle" disabled>Start Stream</button>
+                    <button id="cal-accel-gyro" disabled>Calibrate Accel/Gyro</button>
+                    <button id="cal-mag" disabled>Calibrate Mag</button>
+                    <button id="show-cal-values" disabled>Show Calibration Values</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="three.min.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>

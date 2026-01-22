@@ -1,0 +1,124 @@
+// Missing IMUManager functions - to be added to IMUManager.cpp
+
+// Preset application functions
+void IMUManager::applyAccelPreset(uint8_t preset) {
+    // Preset mapping for ICM-20948:
+    // 1 = Precise (2g)
+    // 2 = Default (4g)  
+    // 3 = Sports (8g)
+    // 4 = Extreme (16g)
+    uint8_t range = (preset <= 1) ? 0 : (preset - 1);
+    if (range > 3) range = 3;
+    
+    RuntimeConfig& cfg = SystemSettings::getConfig();
+    cfg.accelRange = range;
+    
+    // Note: SparkFun ICM-20948 library doesn't expose range configuration
+    // This is a limitation of the library - ranges are fixed
+    DEBUG_INFO("Accel preset %d set (range=%d)", preset, range);
+}
+
+void IMUManager::applyGyroPreset(uint8_t preset) {
+    // Preset mapping for ICM-20948:
+    // 1 = Precise (250dps)
+    // 2 = Default (500dps)
+    // 3 = Fast (1000dps)
+    // 4 = Extreme (2000dps)
+    uint8_t range = (preset <= 1) ? 0 : (preset - 1);
+    if (range > 3) range = 3;
+    
+    RuntimeConfig& cfg = SystemSettings::getConfig();
+    cfg.gyroRange = range;
+    
+    DEBUG_INFO("Gyro preset %d set (range=%d)", preset, range);
+}
+
+void IMUManager::applyMagPreset(uint8_t preset) {
+    RuntimeConfig& cfg = SystemSettings::getConfig();
+    cfg.magPreset = preset;
+    
+    // BMM350 preset configuration would go here
+    // For now, just save the setting
+    DEBUG_INFO("Mag preset %d set", preset);
+}
+
+void IMUManager::applyMagODR(uint8_t odr) {
+    RuntimeConfig& cfg = SystemSettings::getConfig();
+    cfg.magODR = odr;
+    
+    // BMM350 ODR configuration would go here
+    DEBUG_INFO("Mag ODR set to %d Hz", odr);
+}
+
+// VQF parameter tuning
+void IMUManager::setVQFParams(float tauAcc, float tauMag, bool magReject) {
+    if (vqf) {
+        vqf->setTauAcc(tauAcc);
+        vqf->setTauMag(tauMag);
+        vqf->setMagDistRejectionEnabled(magReject);
+        DEBUG_INFO("VQF params updated: TauAcc=%.1f, TauMag=%.1f, MagReject=%d", 
+                   tauAcc, tauMag, magReject);
+    }
+}
+
+// Diagnostic tools
+void IMUManager::runAxisAlignmentDiagnostic() {
+    DEBUG_INFO("=== Axis Alignment Diagnostic ===");
+    DEBUG_INFO("This is a simplified diagnostic for ICM-20948");
+    DEBUG_INFO("Press any key to exit...");
+    
+    while (!Serial.available()) {
+        update();
+        
+        DEBUG_INFO("Accel: X=%.2f Y=%.2f Z=%.2f m/s²", 
+                   accel[0], accel[1], accel[2]);
+        DEBUG_INFO("Gyro:  X=%.2f Y=%.2f Z=%.2f rad/s", 
+                   gyro[0], gyro[1], gyro[2]);
+        DEBUG_INFO("Mag:   X=%.1f Y=%.1f Z=%.1f µT", 
+                   mag[0], mag[1], mag[2]);
+        DEBUG_INFO("Heading: %.1f°", heading);
+        DEBUG_INFO("");
+        
+        delay(500);
+    }
+    while (Serial.available()) Serial.read();
+}
+
+void IMUManager::printHeadingDebug() {
+    DEBUG_INFO("=== VQF Heading Debug ===");
+    DEBUG_INFO("Quaternion: w=%.4f x=%.4f y=%.4f z=%.4f", 
+               quat[0], quat[1], quat[2], quat[3]);
+    DEBUG_INFO("Euler: Roll=%.1f° Pitch=%.1f° Yaw=%.1f°", 
+               roll, pitch, heading);
+    DEBUG_INFO("Mag Field: X=%.1f Y=%.1f Z=%.1f µT", 
+               mag[0], mag[1], mag[2]);
+}
+
+// Helper functions
+uint8_t IMUManager::getCurrentAccelRange() {
+    return SystemSettings::getConfig().accelRange;
+}
+
+uint8_t IMUManager::getCurrentGyroRange() {
+    return SystemSettings::getConfig().gyroRange;
+}
+
+bool IMUManager::isAvailable() {
+    return initialized;
+}
+
+bool IMUManager::checkHealth() {
+    // Simple health check - verify we're getting updates
+    return (updateCount > 0 && (millis() - lastUpdateTime) < 1000);
+}
+
+// Sensor data accessors (for BASE Code compatibility)
+float IMUManager::getAccelX() { return accel[0]; }
+float IMUManager::getAccelY() { return accel[1]; }
+float IMUManager::getAccelZ() { return accel[2]; }
+float IMUManager::getGyroX() { return gyro[0]; }
+float IMUManager::getGyroY() { return gyro[1]; }
+float IMUManager::getGyroZ() { return gyro[2]; }
+float IMUManager::getMagX() { return mag[0]; }
+float IMUManager::getMagY() { return mag[1]; }
+float IMUManager::getMagZ() { return mag[2]; }

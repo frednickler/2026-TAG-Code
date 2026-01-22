@@ -1,0 +1,152 @@
+bool SensorDriverV2::runAccelSelfTest() {
+    Serial.println("[SELF-TEST] Running Accelerometer Self-Test...");
+    
+    // Read production self-test output (Bank 1, 0x0D-0x0F)
+    uint8_t st_accel[3];
+    setBank(1);
+    Wire.beginTransmission(CAL_IMU_ADDR);
+    Wire.write(0x0D); // SELF_TEST_X_ACCEL
+    Wire.endTransmission();
+    Wire.requestFrom(CAL_IMU_ADDR, 3);
+    for(int i=0; i<3; i++) st_accel[i] = Wire.read();
+    
+    // Read baseline values (no self-test)
+    setBank(0);
+    float baseline[3];
+    for(int i=0; i<20; i++) {
+        RawSensorData d = readAll();
+        if(i >= 10) { // Use last 10 samples
+            baseline[0] += d.ax;
+            baseline[1] += d.ay;
+            baseline[2] += d.az;
+        }
+        delay(10);
+    }
+    for(int i=0; i<3; i++) baseline[i] /= 10.0f;
+    
+    // Enable self-test (Bank 2, REG_ACCEL_CONFIG, bits 7:5 = 111)
+    setBank(2);
+    uint8_t accel_cfg = readRegister(2, REG_ACCEL_CONFIG);
+    writeRegister(2, REG_ACCEL_CONFIG, accel_cfg | 0xE0); // Set ST bits
+    delay(20);
+    
+    // Read self-test values
+    setBank(0);
+    float st_response[3] = {0, 0, 0};
+    for(int i=0; i<20; i++) {
+        RawSensorData d = readAll();
+        if(i >= 10) {
+            st_response[0] += d.ax;
+            st_response[1] += d.ay;
+            st_response[2] += d.az;
+        }
+        delay(10);
+    }
+    for(int i=0; i<3; i++) st_response[i] /= 10.0f;
+    
+    // Disable self-test
+    setBank(2);
+    writeRegister(2, REG_ACCEL_CONFIG, accel_cfg);
+    delay(20);
+    
+    // Calculate shift (ST response - baseline)
+    bool passed = true;
+    const char* axis_names[] = {"X", "Y", "Z"};
+    for(int i=0; i<3; i++) {
+        float shift_g = abs(st_response[i] - baseline[i]);
+        
+        // ICM-20948 spec: Self-test response should cause > 0.225g shift
+        if (shift_g < 0.225f) {
+            Serial.printf("  [FAIL] Accel %s: %.3fg shift (min 0.225g)\n", axis_names[i], shift_g);
+            passed = false;
+        } else {
+            Serial.printf("  [PASS] Accel %s: %.3fg shift\n", axis_names[i], shift_g);
+        }
+    }
+    
+    if (passed) Serial.println("[SELF-TEST] Accelerometer: PASSED");
+    else Serial.println("[SELF-TEST] Accelerometer: FAILED");
+    
+    return passed;
+}
+
+bool SensorDriverV2::runGyroSelfTest() {
+    Serial.println("[SELF-TEST] Running Gyroscope Self-Test...");
+    
+    // Read baseline (no self-test)
+    setBank(0);
+    float baseline[3] = {0, 0, 0};
+    for(int i=0; i<20; i++) {
+        RawSensorData d = readAll();
+        if(i >= 10) {
+            baseline[0] += d.gx;
+            baseline[1] += d.gy;
+            baseline[2] += d.gz;
+        }
+        delay(10);
+    }
+    for(int i=0; i<3; i++) baseline[i] /= 10.0f;
+    
+    // Enable self-test (Bank 2, REG_GYRO_CONFIG_1, bits 7:5 = 111)
+    setBank(2);
+    uint8_t gyro_cfg = readRegister(2, REG_GYRO_CONFIG_1);
+    writeRegister(2, REG_GYRO_CONFIG_1, gyro_cfg | 0xE0); // Set ST bits
+    delay(20);
+    
+    // Read self-test response
+    setBank(0);
+    float st_response[3] = {0, 0, 0};
+    for(int i=0; i<20; i++) {
+        RawSensorData d = readAll();
+        if(i >= 10) {
+            st_response[0] += d.gx;
+            st_response[1] += d.gy;
+            st_response[2] += d.gz;
+        }
+        delay(10);
+    }
+    for(int i=0; i<3; i++) st_response[i] /= 10.0f;
+    
+    // Disable self-test
+    setBank(2);
+    writeRegister(2, REG_GYRO_CONFIG_1, gyro_cfg);
+    delay(20);
+    
+    // Calculate shift
+    bool passed = true;
+    const char* axis_names[] = {"X", "Y", "Z"};
+    for(int i=0; i<3; i++) {
+        float shift_dps = abs(st_response[i] - baseline[i]);
+        
+        // ICM-20948 spec: Self-test should cause > 60 dps shift
+        if (shift_dps < 60.0f) {
+            Serial.printf("  [FAIL] Gyro %s: %.1f dps shift (min 60 dps)\n", axis_names[i], shift_dps);
+            passed = false;
+        } else {
+            Serial.printf("  [PASS] Gyro %s: %.1f dps shift\n", axis_names[i], shift_dps);
+        }
+    }
+    
+    if (passed) Serial.println("[SELF-TEST] Gyroscope: PASSED");
+    else Serial.println("[SELF-TEST] Gyroscope: FAILED");
+    
+    return passed;
+}
+
+void SensorDriverV2::writeGyroHardwareOffsets(float x_dps, float y_dps, float z_dps) {
+    // Convert dps to raw LSB (±250dps scale = 131 LSB/dps)
+    int16_t x_offset = (int16_t)(-x_dps * 131.0f);
+    int16_t y_offset = (int16_t)(-y_dps * 131.0f);
+    int16_t z_offset = (int16_t)(-z_dps * 131.0f);
+    
+    // Write to Bank 2, 0x03-0x08 (XG/YG/ZG_OFFS_USRH/L)
+    setBank(2);
+    writeRegister(2, 0x03, (x_offset >> 8) & 0xFF); // XG_OFFS_USRH
+    writeRegister(2, 0x04, x_offset & 0xFF);        // XG_OFFS_USRL
+    writeRegister(2, 0x05, (y_offset >> 8) & 0xFF); // YG_OFFS_USRH
+    writeRegister(2, 0x06, y_offset & 0xFF);        // YG_OFFS_USRL
+    writeRegister(2, 0x07, (z_offset >> 8) & 0xFF); // ZG_OFFS_USRH
+    writeRegister(2, 0x08, z_offset & 0xFF);        // ZG_OFFS_USRL
+    
+    Serial.printf("[DRIVER] Gyro hardware offsets written: X=%.2f Y=%.2f Z=%.2f dps\n", x_dps, y_dps, z_dps);
+}

@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TAG IMU Visualization</title>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
+    <!-- Google Maps API - Replace YOUR_API_KEY_HERE with your actual key -->
+    <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAmbf0LQ1NY5ZombEn7vSlighx4lnA2aW8&callback=initMap" async defer></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+            background-color: #f0f0f0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+        .container {
+            display: flex;
+            flex: 1;
+        }
+        .panel {
+            flex: 1;
+            padding: 10px;
+            margin: 10px;
+            background-color: white;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        #compass-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        #compass {
+            width: 300px;
+            height: 300px;
+            position: relative;
+        }
+        #compass-face {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            background-color: #f5f5f5;
+            border: 2px solid #333;
+            position: relative;
+        }
+        #compass-needle {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 4px;
+            height: 120px;
+            background: linear-gradient(to bottom, red 0%, red 50%, blue 50%, blue 100%);
+            transform-origin: center bottom;
+            transform: translate(-50%, -100%) rotate(0deg);
+            z-index: 10;
+        }
+        #compass-center {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 20px;
+            height: 20px;
+            background-color: #333;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 20;
+        }
+        .compass-label {
+            position: absolute;
+            font-weight: bold;
+            font-size: 16px;
+        }
+        #north {
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        #east {
+            top: 50%;
+            right: 10px;
+            transform: translateY(-50%);
+        }
+        #south {
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        #west {
+            top: 50%;
+            left: 10px;
+            transform: translateY(-50%);
+        }
+        #data-panel {
+            overflow-y: auto;
+        }
+        #map-container {
+            width: 100%;
+            height: 300px;
+        }
+        .data-row {
+            display: flex;
+            margin-bottom: 5px;
+        }
+        .data-label {
+            flex: 1;
+            font-weight: bold;
+        }
+        .data-value {
+            flex: 2;
+        }
+        #connection-status {
+            padding: 10px;
+            text-align: center;
+            background-color: #f44336;
+            color: white;
+            font-weight: bold;
+        }
+        .connected {
+            background-color: #4CAF50 !important;
+        }
+        #serial-selector {
+            padding: 10px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div id="connection-status">Not Connected</div>
+    <div id="serial-selector">
+        <button id="connect-button">Connect Serial</button>
+        <button id="disconnect-button" disabled>Disconnect</button>
+    </div>
+    <div class="container">
+        <div class="panel" id="cube-panel">
+            <h2>3D Orientation</h2>
+            <div id="cube-container"></div>
+        </div>
+        <div class="panel">
+            <h2>Compass</h2>
+            <div id="compass-container">
+                <div id="compass">
+                    <div id="compass-face">
+                        <div class="compass-label" id="north">N</div>
+                        <div class="compass-label" id="east">E</div>
+                        <div class="compass-label" id="south">S</div>
+                        <div class="compass-label" id="west">W</div>
+                        <div id="compass-needle"></div>
+                        <div id="compass-center"></div>
+                    </div>
+                </div>
+                <div id="heading-display">Heading: 0°</div>
+            </div>
+        </div>
+        <div class="panel" id="data-panel">
+            <h2>Sensor Data</h2>
+            <div class="data-row">
+                <div class="data-label">Latitude:</div>
+                <div class="data-value" id="latitude">0.0000000</div>
+            </div>
+            <div class="data-row">
+                <div class="data-label">Longitude:</div>
+                <div class="data-value" id="longitude">0.0000000</div>
+            </div>
+            <div class="data-row">
+                <div class="data-label">Altitude:</div>
+                <div class="data-value" id="altitude">0.00 m</div>
+            </div>
+            <div class="data-row">
+                <div class="data-label">Speed:</div>
+                <div class="data-value" id="speed">0.00 m/s</div>
+            </div>
+            <div class="data-row">
+                <div class="data-label">GPS Heading:</div>
+                <div class="data-value" id="gps-heading">0.00°</div>
+            </div>
+            <div class="data-row">
+                <div class="data-label">Yaw:</div>
+                <div class="data-value" id="yaw">0.00°</div>
+            </div>
+            <div class="data-row">
+                <div class="data-label">Pitch:</div>
+                <div class="data-value" id="pitch">0.00°</div>
+            </div>
+            <div class="data-row">
+                <div class="data-label">Roll:</div>
+                <div class="data-value" id="roll">0.00°</div>
+            </div>
+            <div class="data-row">
+                <div class="data-label">Quaternion:</div>
+                <div class="data-value" id="quaternion">1.0000, 0.0000, 0.0000, 0.0000</div>
+            </div>
+            <div class="data-row">
+                <div class="data-label">Satellites:</div>
+                <div class="data-value" id="satellites">0</div>
+            </div>
+            <div class="data-row">
+                <div class="data-label">Fix Type:</div>
+                <div class="data-value" id="fix-type">0</div>
+            </div>
+            <div class="data-row">
+                <div class="data-label">Using 9DOF:</div>
+                <div class="data-value" id="using-9dof">No</div>
+            </div>
+            <div class="data-row">
+                <div class="data-label">Last Update:</div>
+                <div class="data-value" id="last-update">Never</div>
+            </div>
+        </div>
+    </div>
+    <div class="container">
+        <div class="panel">
+            <h2>GPS Position</h2>
+            <div id="map-container"></div>
+        </div>
+        <div class="panel">
+            <h2>Serial Monitor</h2>
+            <div id="serial-monitor" style="height: 300px; overflow-y: auto; font-family: monospace; background-color: #222; color: #0f0; padding: 10px;"></div>
+        </div>
+    </div>
+
+    <script>
+        // Three.js setup for 3D cube
+        let scene, camera, renderer, cube;
+        let isConnected = false;
+        let port = null;
+        let reader = null;
+        let readableStreamClosed;
+        let writer = null;
+        let writableStreamClosed;
+
+        // --- Performance optimization for serial monitor ---
+        let logQueue = [];
+        const MAX_LOG_LINES = 200; // Max lines to keep in the monitor
+
+        function initThreeJS() {
+            // Create scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xf0f0f0);
+            
+            // Create camera
+            camera = new THREE.PerspectiveCamera(75, 1, 0.1, 1000);
+            camera.position.z = 5;
+            
+            // Create renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(300, 300);
+            document.getElementById('cube-container').appendChild(renderer.domElement);
+            
+            // Add controls
+            const controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.name = 'orbitControls'; // Name it for later access
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.25;
+            
+            // Create cube
+            const geometry = new THREE.BoxGeometry(2, 0.5, 4);
+            const materials = [
+                new THREE.MeshBasicMaterial({ color: 0xff0000 }), // right - red
+                new THREE.MeshBasicMaterial({ color: 0x0000ff }), // left - blue
+                new THREE.MeshBasicMaterial({ color: 0x00ff00 }), // top - green
+                new THREE.MeshBasicMaterial({ color: 0xffff00 }), // bottom - yellow
+                new THREE.MeshBasicMaterial({ color: 0xff00ff }), // front - magenta
+                new THREE.MeshBasicMaterial({ color: 0x00ffff })  // back - cyan
+            ];
+            
+            cube = new THREE.Mesh(geometry, materials);
+            scene.add(cube);
+            
+            // Add coordinate axes
+            const axesHelper = new THREE.AxesHelper(3);
+            scene.add(axesHelper);
+            
+            // Start animation loop
+            animate();
+        }
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            const controls = scene.getObjectByName('orbitControls');
+            if (controls) controls.update(); // Required if damping is enabled
+            renderer.render(scene, camera);
+        }
+        
+        // Update 3D cube orientation from quaternion
+        function updateCubeOrientation(q0, q1, q2, q3) {
+            if (cube) {
+                console.log(`[Debug] Updating cube with q: ${q0}, ${q1}, ${q2}, ${q3}`);
+                cube.quaternion.set(q1, q2, q3, q0);
+            }
+        }
+        
+        // Update compass needle
+        function updateCompass(heading) {
+            console.log(`[Debug] Updating compass with heading: ${heading}`);
+            const needle = document.getElementById('compass-needle');
+            needle.style.transform = `translate(-50%, -100%) rotate(${heading}deg)`;
+            document.getElementById('heading-display').textContent = `Heading: ${heading.toFixed(2)}°`;
+        }
+        
+        // Update sensor data display
+        function updateSensorData(data) {
+            document.getElementById('latitude').textContent = data.lat.toFixed(7);
+            document.getElementById('longitude').textContent = data.lng.toFixed(7);
+            document.getElementById('altitude').textContent = `${data.alt.toFixed(2)} m`;
+            document.getElementById('speed').textContent = `${data.speed.toFixed(2)} m/s`;
+            document.getElementById('gps-heading').textContent = `${data.heading.toFixed(2)}°`;
+            document.getElementById('yaw').textContent = `${data.yaw.toFixed(2)}°`;
+            document.getElementById('pitch').textContent = `${data.pitch.toFixed(2)}°`;
+            document.getElementById('roll').textContent = `${data.roll.toFixed(2)}°`;
+            document.getElementById('quaternion').textContent = 
+                `${data.q0.toFixed(4)}, ${data.q1.toFixed(4)}, ${data.q2.toFixed(4)}, ${data.q3.toFixed(4)}`;
+            document.getElementById('satellites').textContent = data.sats;
+            document.getElementById('fix-type').textContent = data.fix;
+            document.getElementById('using-9dof').textContent = data.using9dof ? 'Yes' : 'No';
+            document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+            
+            // Update 3D cube
+            updateCubeOrientation(data.q0, data.q1, data.q2, data.q3);
+            
+            // Update compass
+            updateCompass(data.yaw);
+        }
+        
+        // --- Optimized log rendering loop ---
+        function updateLogs() {
+            const monitor = document.getElementById('serial-monitor');
+            if (logQueue.length > 0) {
+                const fragment = document.createDocumentFragment();
+                logQueue.forEach(line => {
+                    const div = document.createElement('div');
+                    div.textContent = line;
+                    fragment.appendChild(div);
+                });
+                monitor.appendChild(fragment);
+                logQueue = []; // Clear the queue
+
+                // Trim old logs to prevent performance degradation
+                while (monitor.children.length > MAX_LOG_LINES) {
+                    monitor.removeChild(monitor.firstChild);
+                }
+                monitor.scrollTop = monitor.scrollHeight;
+            }
+            requestAnimationFrame(updateLogs);
+        }
+
+        // Process incoming serial data
+        function processSerialData(line) {
+            console.log('[Debug] Received line:', line);
+            // Check for position JSON data
+            const jsonStart = line.indexOf('[POSITION_JSON]');
+            const jsonEnd = line.indexOf('[/POSITION_JSON]');
+            
+            if (jsonStart !== -1 && jsonEnd !== -1) {
+                const jsonStr = line.substring(jsonStart + 15, jsonEnd);
+                console.log('[Debug] Found position JSON:', jsonStr);
+                try {
+                    const data = JSON.parse(jsonStr);
+                    console.log('[Debug] Parsed data:', data);
+                    updateSensorData(data);
+                } catch (e) {
+                    console.error('Error parsing JSON:', e);
+                    logQueue.push(`[JSON Error] ${e.message}`);
+                }
+            } else {
+                // If it's not JSON data, queue it for display
+                logQueue.push(line);
+            }
+        }
+        
+        // Disconnect from serial port
+        async function disconnectFromSerialPort() {
+            try {
+                if (reader) { await reader.cancel(); await readableStreamClosed.catch(()=>{}); reader = null; }
+                if (writer) { await writer.close(); await writableStreamClosed.catch(()=>{}); writer = null; }
+                if (port) { await port.close(); port = null; }
+            } catch (err) { console.error('Error during disconnect:', err); }
+            isConnected = false;
+            document.getElementById('connection-status').textContent = 'Not Connected';
+            document.getElementById('connect-button').disabled = false;
+            document.getElementById('disconnect-button').disabled = true;
+        }
+
+        // Connect to serial port
+        async function connectToSerialPort() {
+            try {
+                if (!('serial' in navigator)) {
+                    alert('Web Serial API not supported. Use Chrome or Edge.');
+                    return;
+                }
+                if (port) await disconnectFromSerialPort();
+                // Show port selection dialog
+                port = await navigator.serial.requestPort();
+                await port.open({ baudRate: 115200 });
+                const textDecoder = new TextDecoderStream();
+                readableStreamClosed = port.readable.pipeTo(textDecoder.writable);
+                reader = textDecoder.readable.getReader();
+                // Optional: Setup writer if needed
+                const textEncoder = new TextEncoderStream();
+                writableStreamClosed = textEncoder.readable.pipeTo(port.writable);
+                writer = textEncoder.writable.getWriter();
+                isConnected = true;
+                document.getElementById('connection-status').textContent = 'Connected';
+                document.getElementById('connect-button').disabled = true;
+                document.getElementById('disconnect-button').disabled = false;
+                readSerialData();
+            } catch (err) {
+                document.getElementById('connection-status').textContent = 'Connection Error';
+                isConnected = false;
+                port = null;
+                alert('Serial connection failed: ' + err);
+            }
+        }
+
+        // Read serial data
+        async function readSerialData() {
+            const MAX_CONSECUTIVE_ERRORS = 5;
+            let consecutiveErrors = 0;
+            let buffer = '';
+
+            try {
+                while (true && reader) {
+                    try {
+                        const { value, done } = await reader.read();
+                        
+                        if (done) {
+                            console.log('Serial port closed by device');
+                            // Allow the serial port to be closed and cleaned up
+                            reader.releaseLock();
+                            break;
+                        }
+                        
+                        // Reset error counter on successful read
+                        consecutiveErrors = 0;
+                        
+                        // Process received data
+                        buffer += value;
+                        
+                        // Process complete lines
+                        const lines = buffer.split('\n');
+                        buffer = lines.pop(); // Keep the last incomplete line in the buffer
+                        
+                        for (const line of lines) {
+                            if (line.trim()) {
+                                processSerialData(line.trim());
+                            }
+                        }
+                    } catch (readError) {
+                        consecutiveErrors++;
+                        console.error(`Serial read error (${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}):`, readError);
+                        
+                        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                            throw new Error(`Too many consecutive read errors: ${readError.message}`);
+                        }
+                        
+                        // Small delay before retrying
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                    }
+                }
+            } catch (error) {
+                console.error('Fatal error in readSerialData:', error);
+                
+                // Update UI to show disconnected state
+                document.getElementById('connection-status').textContent = 'Disconnected: ' + error.message;
+                document.getElementById('connection-status').classList.remove('connected');
+                document.getElementById('connect-button').disabled = false;
+                document.getElementById('disconnect-button').disabled = true;
+                isConnected = false;
+                
+                // Clean up the connection
+                try {
+                    if (reader) {
+                        await reader.cancel().catch(() => {});
+                        await readableStreamClosed.catch(() => {});
+                        reader = null;
+                    }
+                    
+                    if (writer) {
+                        await writer.close().catch(() => {});
+                        await writableStreamClosed.catch(() => {});
+                        writer = null;
+                    }
+                    
+                    if (port) {
+                        await port.close().catch(() => {});
+                        port = null;
+                    }
+                } catch (cleanupError) {
+                    console.error('Error during connection cleanup:', cleanupError);
+                }
+            }
+            
+            // If we exit the loop and still connected, try to restart
+            if (isConnected) {
+                console.log('Read loop exited but still connected, attempting to restart...');
+                setTimeout(readSerialData, 1000);
+            }
+        }
+        
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            // Start the log rendering loop
+            updateLogs();
+
+            // Initialize Three.js
+            initThreeJS();
+            
+            // Add event listeners
+            document.getElementById('connect-button').addEventListener('click', connectToSerialPort);
+            document.getElementById('disconnect-button').addEventListener('click', disconnectFromSerialPort);
+            
+            // Check if Web Serial API is available
+            if (!navigator.serial) {
+                document.getElementById('connection-status').textContent = 'Web Serial API not supported';
+                document.getElementById('connect-button').disabled = true;
+                alert('Web Serial API is not supported in this browser. Please use Chrome or Edge.');
+            }
+        });
+    </script>
+    
+    <!-- Load Google Maps API -->
+    <script async defer src="https://maps.googleapis.com/maps/api/js?key=YOUR_API_KEY&callback=initMap"></script>
+    <script>
+        let map;
+        let marker;
+        
+        function initMap() {
+            // Create map
+            map = new google.maps.Map(document.getElementById('map-container'), {
+                center: { lat: 0, lng: 0 },
+                zoom: 15
+            });
+            
+            // Create marker
+            marker = new google.maps.Marker({
+                position: { lat: 0, lng: 0 },
+                map: map,
+                title: 'Current Position'
+            });
+        }
+        
+        // Update map position
+        function updateMapPosition(lat, lng) {
+            if (map && marker) {
+                const position = { lat, lng };
+                marker.setPosition(position);
+                map.setCenter(position);
+            }
+        }
+    </script>
+</body>
+</html>

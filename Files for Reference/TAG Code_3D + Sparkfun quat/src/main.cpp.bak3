@@ -1,0 +1,1077 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include <LittleFS.h>
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+#include <ArduinoJson.h>
+#include <Wire.h>
+#include <SPI.h>
+#include <math.h>
+#include "dmp_imu.h"  // DMP-based quaternion fusion
+#include <EEPROM.h>
+#include "config.h"
+#include "accel_config.h"
+#include "gyro_config.h"
+#include "mag_config.h"
+#include "temp_config.h"
+#include "imu_config.h"
+#include "imu_validation.h"
+#include "gps_module.h"
+#include "sensor_fusion.h"
+#include "position_tracking.h"
+#include "calibration_common.h"
+#include "startup_calibration.h"
+#include "accel_calibration.h"
+#include "gyro_calibration.h"
+#include "mag_calibration.h"
+#include "temp_sensor.h"
+#include "calibration_manager.h" // Include for calibration data structures and functions
+#include "radio_packet.h"
+#include "radio_packet.h"
+#include "esp_now_handler.h"
+#include "menu_handler.h"
+#include "zupt.h"  // Added ZUPT module
+#include "accel_config.h" // For AccelCfg namespace
+#include "gyro_config.h" // For GyroCfg namespace
+#include "gyro_config.h" // For GyroCfg namespace
+#include "mag_config.h"  // For MagCfg namespace
+#include "config_store.h" // For persistent settings
+#include "menu_handler.h" // For comprehensive configuration menu
+
+// DMP quaternion update flag
+bool dmpReady = false;
+
+// Calibration state machine
+enum CalibrationState { CAL_IDLE, CAL_ACCEL_GYRO, CAL_MAG };
+CalibrationState calState = CAL_IDLE;
+unsigned long calStartTime = 0;
+const int CALIBRATION_DURATION = 30000; // 30 seconds
+#include "data_logger.h"
+
+// When set to true, the sensor fusion will use the magnetometer data.
+// This is enabled by default, but can be disabled if the magnetometer is not calibrated.
+bool useMagnetometer = true;
+
+// --- AXIS IDENTIFICATION MODE ---
+// Set this to 'true' and re-upload to easily identify sensor axes.
+// It will print only raw accelerometer data to the Serial Monitor.
+const bool AXIS_IDENTIFICATION_MODE = false;
+
+// Wi-Fi Access Point Configuration
+const char* ssid = "ESP32_IMU_Sensor";
+const char* password = "password123"; // CHANGE THIS!
+
+// Web Server & WebSocket
+AsyncWebServer server(80);
+AsyncWebSocket ws("/ws");
+
+// --- I2C Addresses ---
+#define ICM_20948_ADDR 0x68
+#define AK09916_ADDR   0x0C
+
+// Add these defines at the top of your main file
+#define PROCESSING_VISUALIZATION   // Enable serial output formatted for Processing
+
+// --- Forward Declarations ---
+void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len);
+void handleSerialCommand(const String& command);
+#if ENABLE_EEPROM_SELFTEST
+void eepromSelfTest();
+#endif
+
+// --- Global Variables ---
+bool streamActive = false;
+
+// --- Sensor Data structure to prevent shadowing and ensure alignment ---
+struct SensorReadings {
+    float raw_acc[3];  // mg
+    float raw_gyro[3]; // dps
+    float raw_mag[3];  // uT
+    float cal_acc[3];  // mg
+    float cal_gyro[3]; // dps
+    float cal_mag[3];  // uT
+    float mag_mag;     // uT
+} g_sensors = {0};
+
+// Legacy variables for compatibility with AXIS_IDENTIFICATION_MODE and data logger
+float ax_mg = 0, ay_mg = 0, az_mg = 0;
+float gx_dps = 0, gy_dps = 0, gz_dps = 0;
+float mx_uT = 0, my_uT = 0, mz_uT = 0;
+
+float q6[4] = {1, 0, 0, 0}; // Quaternion for 6-DOF fusion
+float q9[4] = {1, 0, 0, 0}; // Quaternion for 9-DOF fusion
+
+// Timing
+unsigned long lastStreamTime = 0;
+unsigned long lastUpdateTime = 0;
+unsigned long lastFilterUpdate = 0;
+
+// Function to send calibration values to WebSocket clients
+void sendCalibrationValues() {
+    const CalibrationData& calibration = getCalibrationData();
+    
+    // Create a JSON document for the calibration data
+    JsonDocument doc;
+    
+    // Use the recommended syntax to create nested objects and arrays
+    JsonObject calObj = doc["calibration"].to<JsonObject>();
+    
+    JsonArray accelBias = calObj["accelBias"].to<JsonArray>();
+    accelBias.add(calibration.accelBias[0]);
+    accelBias.add(calibration.accelBias[1]);
+    accelBias.add(calibration.accelBias[2]);
+    
+    JsonArray gyroBias = calObj["gyroBias"].to<JsonArray>();
+    gyroBias.add(calibration.gyroBias[0]);
+    gyroBias.add(calibration.gyroBias[1]);
+    gyroBias.add(calibration.gyroBias[2]);
+    
+    JsonArray magBias = calObj["magBias"].to<JsonArray>();
+    magBias.add(calibration.magBias[0]);
+    magBias.add(calibration.magBias[1]);
+    magBias.add(calibration.magBias[2]);
+    
+    JsonArray magScale = calObj["magScale"].to<JsonArray>();
+    magScale.add(calibration.magScale[0]);
+    magScale.add(calibration.magScale[1]);
+    magScale.add(calibration.magScale[2]);
+    
+    // Serialize JSON to string
+    String jsonString;
+    serializeJson(doc, jsonString);
+    
+    // Send to all connected WebSocket clients
+    ws.textAll(jsonString);
+}
+
+// --- WebSocket Event Handler ---
+void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
+    if (type == WS_EVT_CONNECT) {
+        // Serial.printf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
+    } else if (type == WS_EVT_DISCONNECT) {
+        // Serial.printf("WebSocket client #%u disconnected\n", client->id());
+    } else if (type == WS_EVT_PONG) {
+        // Serial.printf("Pong from client #%u\n", client->id());
+    } else if (type == WS_EVT_DATA) {
+        JsonDocument doc; // Use modern JsonDocument
+        DeserializationError error = deserializeJson(doc, (char*)data, len);
+        if (error) {
+            return;
+        }
+
+        // Check if the 'command' key exists before trying to access it
+        if (!doc["command"].isNull()) {
+            const char* command = doc["command"];
+            
+            if (strcmp(command, "startStream") == 0) {
+                streamActive = true;
+            } else if (strcmp(command, "stopStream") == 0) {
+                streamActive = false;
+            } else if (strcmp(command, "calibrateAccel") == 0) {
+                bool success = calibrateAccelSimple();
+            } else if (strcmp(command, "calibrateMag") == 0) {
+                bool success = calibrateMagnetometer();
+            } else if (strcmp(command, "getCalibrationValues") == 0) {
+                sendCalibrationValues();
+            }
+        }
+    }
+}
+
+// --- Radio Packet Helper ---
+void sendRadioPacket(const TrackingPacket& packet) {
+    sendTrackingData(packet);
+    
+    // Debug print of the packet size (once)
+    static bool printedSize = false;
+    if (!printedSize) {
+        Serial.printf("[RADIO] Packet Size: %d bytes\n", sizeof(TrackingPacket));
+        printedSize = true;
+    }
+}
+
+// --- Global Flags ---
+bool g_debugMode = false;
+
+// --- State Machine ---
+enum SystemState {
+    SYS_BOOT,
+    SYS_INIT_SENSORS,
+    SYS_SAFE_MODE,
+    SYS_MENU,
+    SYS_CONFIG_MENU, // New State
+    SYS_WAIT_FIX,
+    SYS_RUNNING
+};
+SystemState sysState = SYS_BOOT;
+
+// --- Function Prototypes ---
+bool initializeSensors();
+// Forward Declarations
+void handleMainMenu();
+void handleWaitFix();
+void handleConfigMenu(); 
+void handleSafeMode();
+void scanI2C();
+void softReset();
+#ifdef PROCESSING_VISUALIZATION
+void updateVisualization();
+#endif
+
+// --- Main Setup ---
+void setup() {
+    Serial.begin(115200);
+    delay(1000);
+    Serial.println("\n--- ESP32 IMU/GPS WebSocket Server ---");
+    
+    // Initialize LittleFS
+    if (!LittleFS.begin()) {
+        Serial.println("An Error has occurred while mounting LittleFS");
+    } else {
+        Serial.println("LittleFS mounted successfully");
+        if (DataLogger::init()) Serial.println("[LOG] Found existing log file.");
+    }
+
+    // Initialize I2C Buses
+    Serial.println("Initializing I2C...");
+    Wire.begin(IMU_SDA_PIN, IMU_SCL_PIN); // IMU I2C
+    Wire.setClock(400000);
+    Wire1.begin(GPS_SDA_PIN, GPS_SCL_PIN); // GPS I2C
+    Wire1.setClock(400000);
+    Serial.println("I2C initialized");
+
+    // DMP will be initialized in initializeSensors()
+    Serial.println("DMP initialization deferred to sensor init phase");
+
+    sysState = SYS_INIT_SENSORS;
+}
+
+void loop() {
+    switch (sysState) {
+        case SYS_INIT_SENSORS:
+            if (initializeSensors()) {
+                // SUCCESS: Go to Menu instead of Auto-Run
+                Serial.println("\n[SYSTEM READY]");
+                sysState = SYS_MENU;
+                
+                // Init Network/Server 
+                Serial.printf("Setting up AP: %s\n", ssid);
+                WiFi.mode(WIFI_AP);
+                WiFi.softAP(ssid, password);
+                
+                ws.onEvent(onWsEvent);
+                server.addHandler(&ws);
+                server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
+                server.begin();
+            } else {
+                Serial.println("\n[ERROR] Sensor Initialization Failed. Entering SAFE MODE.");
+                sysState = SYS_SAFE_MODE;
+            }
+            break;
+
+        case SYS_MENU:
+            handleMainMenu();
+            break;
+
+        case SYS_WAIT_FIX:
+            handleWaitFix();
+            break;
+
+        case SYS_SAFE_MODE:
+            handleSafeMode();
+            break;
+
+        case SYS_RUNNING:
+            {
+            // --- Normal Operation Loop ---
+            // --- AXIS IDENTIFICATION MODE ---
+            if (AXIS_IDENTIFICATION_MODE) {
+                if (readAccel(ax_mg, ay_mg, az_mg)) {
+                    Serial.printf("X: %-8.2f Y: %-8.2f Z: %-8.2f\n", ax_mg, ay_mg, az_mg);
+                }
+                delay(250);
+                return;
+            }
+
+            ws.cleanupClients();
+            
+            // Poll GPS module
+            updateGPS();
+
+            // Check for exit command
+            if (Serial.available() > 0) {
+                char cmd = Serial.read();
+                if (cmd == 'x' || cmd == 'q') {
+                    Serial.println("\n[STOP] Stopping Stream. Returning to Menu.");
+                    sysState = SYS_MENU;
+                    return; 
+                } else if (cmd == 'r') {
+                    softReset();
+                    return;
+                }
+            }
+            
+            // --- NEW SENSOR PIPELINE (Fixes Frame Mismatch) ---
+            
+            // --- Warmup / Convergence Logic ---
+            static unsigned long tracking_start_time = 0;
+            if (tracking_start_time == 0) tracking_start_time = millis();
+            
+            bool isWarmingUp = (millis() - tracking_start_time < 3000);
+            
+            // During warmup, force High Beta for instant convergence
+            if (isWarmingUp) {
+               MadgwickFilter.setBeta(2.5f); 
+               
+               // USER REQUEST: Explicit Feedback
+               static unsigned long lastWarmupPrint = 0;
+               if (millis() - lastWarmupPrint > 500) {
+                   lastWarmupPrint = millis();
+                   int remaining = 3 - (millis() - tracking_start_time)/1000;
+                   Serial.printf("[SYSTEM] WARMING UP... Sensors Settling... %d s\r", remaining);
+               }
+               
+            } else {
+               // Restore normal beta
+               if (MadgwickFilter.getBeta() > 2.0f) {
+                   MadgwickFilter.setBeta(0.1f); // FIX #4: Lower beta for stable steady-state
+                   Serial.println("\n[SYSTEM] WARMUP COMPLETE. TRACKING ACTIVE.");
+               }
+            }
+
+            // 1. Read Raw Sensor Data (Physical Axes)
+            float r_ax, r_ay, r_az; // Raw Accel
+            float r_gx, r_gy, r_gz; // Raw Gyro
+            float r_mx, r_my, r_mz; // Raw Mag
+            
+            // Use low-level read functions (defined in imu_config.cpp)
+            readAccel(r_ax, r_ay, r_az);
+            readGyro(r_gx, r_gy, r_gz);
+            
+            // CRITICAL FIX: readMag returns false if called too fast (<5ms). 
+            // Previous code used uninitialized stack garbage in that case!
+            // Initialize with last known valid raw data.
+            r_mx = g_sensors.raw_mag[0];
+            r_my = g_sensors.raw_mag[1];
+            r_mz = g_sensors.raw_mag[2];
+            
+            // Only update if fresh data is available
+            bool newMag = readMag(r_mx, r_my, r_mz); 
+            
+            // Update global raw vars for debugging/logging (Physical Frame)
+            g_sensors.raw_acc[0] = r_ax; g_sensors.raw_acc[1] = r_ay; g_sensors.raw_acc[2] = r_az;
+            g_sensors.raw_gyro[0] = r_gx; g_sensors.raw_gyro[1] = r_gy; g_sensors.raw_gyro[2] = r_gz;
+            
+            if (newMag) {
+                g_sensors.raw_mag[0] = r_mx; g_sensors.raw_mag[1] = r_my; g_sensors.raw_mag[2] = r_mz;
+            }
+
+            // 2. Apply Calibration (Physical Frame)
+            // Subtract bias from the matching physical axis
+            const CalibrationData& cal = getCalibrationData();
+            
+            float c_ax, c_ay, c_az;
+            float c_gx, c_gy, c_gz;
+            float c_mx, c_my, c_mz;
+
+            // Accel Cal
+            c_ax = (r_ax - cal.accelBias[0]) * cal.accelScale[0];
+            c_ay = (r_ay - cal.accelBias[1]) * cal.accelScale[1];
+            c_az = (r_az - cal.accelBias[2]) * cal.accelScale[2];
+
+            // Gyro Cal
+            c_gx = r_gx - cal.gyroBias[0];
+            c_gy = r_gy - cal.gyroBias[1];
+            c_gz = r_gz - cal.gyroBias[2];
+
+            // Mag Cal
+            // Mag Cal
+            // Subtract Hard Iron (Bias)
+            float mx_cen = r_mx - cal.magBias[0];
+            float my_cen = r_my - cal.magBias[1];
+            float mz_cen = r_mz - cal.magBias[2];
+            
+            // Apply Soft Iron (Matrix)
+            // Note: magScale is just the diagonal of magSoftIron. We use the full matrix for better accuracy.
+            if (cal.magCalMethod == MAG_CAL_HARD_SOFT_IRON || cal.magCalMethod == MAG_CAL_ELLIPSOID) {
+                c_mx = cal.magSoftIron[0][0] * mx_cen + cal.magSoftIron[0][1] * my_cen + cal.magSoftIron[0][2] * mz_cen;
+                c_my = cal.magSoftIron[1][0] * mx_cen + cal.magSoftIron[1][1] * my_cen + cal.magSoftIron[1][2] * mz_cen;
+                c_mz = cal.magSoftIron[2][0] * mx_cen + cal.magSoftIron[2][1] * my_cen + cal.magSoftIron[2][2] * mz_cen;
+            } else {
+                // Fallback to simple scaling (diagonal only)
+                c_mx = mx_cen * cal.magScale[0];
+                c_my = my_cen * cal.magScale[1];
+                c_mz = mz_cen * cal.magScale[2];
+            }
+
+            // 3. Apply Axis Mapping (Physical -> Body/NED Frame)
+            // This rotates the ALREADY CALIBRATED vector into the target frame
+            float m_ax, m_ay, m_az;
+            float m_gx, m_gy, m_gz;
+            float m_mx, m_my, m_mz;
+            
+            applyAxisMapping(c_ax, c_ay, c_az, m_ax, m_ay, m_az);
+            applyAxisMapping(c_gx, c_gy, c_gz, m_gx, m_gy, m_gz); 
+            // SPECIAL CASE: Gyro Z is confirmed to be Positive for Right Turn (Raw View),
+            // matching NED expectation. applyAxisMapping inverts Z (for Accel), so we must
+            // revert Gyro Z to Identity to prevent Yaw inversion.
+            m_gz = c_gz; 
+            
+            // Mag axes (OPTIMAL MAPPING from simulation):
+            // Configuration [-1, +1, -1] produces minimum heading drift (101.66° std dev)
+            // 
+            // Physical alignment based on ICM-20948 datasheet + empirical testing:
+            // - Mag X is opposite to Accel X → Invert input
+            // - Mag Y aligns with Accel Y → Pass through identity  
+            // - Mag Z handled by applyAxisMapping's Z→-Z transformation
+            //
+            // This mapping ensures tilt-compensated heading remains stable during roll/pitch.
+            applyAxisMapping(-c_mx, c_my, c_mz, m_mx, m_my, m_mz);
+
+            // Update global calibrated vars (Mapped Body Frame) - used by fusion
+            g_sensors.cal_acc[0] = m_ax; g_sensors.cal_acc[1] = m_ay; g_sensors.cal_acc[2] = m_az;
+            g_sensors.cal_gyro[0] = m_gx; g_sensors.cal_gyro[1] = m_gy; g_sensors.cal_gyro[2] = m_gz;
+            g_sensors.cal_mag[0] = m_mx; g_sensors.cal_mag[1] = m_my; g_sensors.cal_mag[2] = m_mz;
+
+            // Apply Zero Velocity Update (ZUPT) if enabled
+            // SKIP DURING WARMUP to avoid locking onto unstable filter or noise
+            if (!isWarmingUp) {
+                applyZUPT(g_sensors.cal_gyro[0], g_sensors.cal_gyro[1], g_sensors.cal_gyro[2],
+                          g_sensors.cal_acc[0], g_sensors.cal_acc[1], g_sensors.cal_acc[2]);
+            }
+
+            // Update legacy variables AFTER ZUPT so Serial output reflects the ZUPT state
+            ax_mg = m_ax; ay_mg = m_ay; az_mg = m_az;
+            gx_dps = g_sensors.cal_gyro[0]; 
+            gy_dps = g_sensors.cal_gyro[1]; 
+            gz_dps = g_sensors.cal_gyro[2];
+            mx_uT = m_mx; my_uT = m_my; mz_uT = m_mz;
+            
+            g_sensors.mag_mag = sqrt(m_mx*m_mx + m_my*m_my + m_mz*m_mz);
+
+            // Update Madgwick filter
+            // IMPLEMENTING DYNAMIC DELTA-TIME (DT) TO FIX SLOW CONVERGENCE
+            // Radio timeouts cause loop rate to drop below 100Hz. 
+            // We must correct the filter speed by measuring real elapsed time.
+            
+            static unsigned long lastUpdateMicros = 0;
+            unsigned long currentMicros = micros();
+            float dt = (currentMicros - lastUpdateMicros) / 1000000.0f;
+            lastUpdateMicros = currentMicros;
+
+            // Safety check for first run or rollover
+            if (dt <= 0.0f || dt > 1.0f) {
+                dt = 0.01f; // Default to 100Hz if invalid
+            }
+
+            // Update filter frequency (Inverse of dt)
+            MadgwickFilter.begin(1.0f / dt);
+            
+            // CRITICAL FIX: Convert Gyro from DPS to Rad/s for Madgwick Filter!
+            float gx_rad = g_sensors.cal_gyro[0] * DEG_TO_RAD;
+            float gy_rad = g_sensors.cal_gyro[1] * DEG_TO_RAD;
+            float gz_rad = g_sensors.cal_gyro[2] * DEG_TO_RAD;
+            
+            if (isMagCalibrated()) {
+                // FIX #2: Normalize magnetometer for Madgwick (expects unit vectors)
+                float mag_norm = sqrt(g_sensors.cal_mag[0]*g_sensors.cal_mag[0] + 
+                                      g_sensors.cal_mag[1]*g_sensors.cal_mag[1] + 
+                                      g_sensors.cal_mag[2]*g_sensors.cal_mag[2]);
+                if (mag_norm > 0.1f) {
+                    float mx_n = g_sensors.cal_mag[0] / mag_norm;
+                    float my_n = g_sensors.cal_mag[1] / mag_norm;
+                    float mz_n = g_sensors.cal_mag[2] / mag_norm;
+                    
+                    MadgwickFilter.update(gx_rad, gy_rad, gz_rad,
+                                          g_sensors.cal_acc[0] / 1000.0f, g_sensors.cal_acc[1] / 1000.0f, g_sensors.cal_acc[2] / 1000.0f,
+                                          mx_n, my_n, mz_n);
+                } else {
+                    // Magnetometer reading invalid, fallback to 6DOF
+                    MadgwickFilter.updateIMU(gx_rad, gy_rad, gz_rad,
+                                             g_sensors.cal_acc[0] / 1000.0f, g_sensors.cal_acc[1] / 1000.0f, g_sensors.cal_acc[2] / 1000.0f);
+                }
+            } else {
+                MadgwickFilter.updateIMU(gx_rad, gy_rad, gz_rad,
+                                         g_sensors.cal_acc[0] / 1000.0f, g_sensors.cal_acc[1] / 1000.0f, g_sensors.cal_acc[2] / 1000.0f);
+            }
+            
+            // DEBUG: Print quaternion every 100 updates
+            static int debugCount = 0;
+            if (++debugCount >= 100) {
+                debugCount = 0;
+                float qw_test, qx_test, qy_test, qz_test;
+                MadgwickFilter.getQuaternion(qw_test, qx_test, qy_test, qz_test);
+                Serial.printf("[DEBUG] Quat: %.3f, %.3f, %.3f, %.3f | Beta: %.3f\n", 
+                             qw_test, qx_test, qy_test, qz_test, MadgwickFilter.getBeta());
+            }
+
+            #ifdef PROCESSING_VISUALIZATION
+            if (!isWarmingUp) {
+                updateVisualization();
+            }
+            #endif
+            }
+            break;
+
+            
+        case SYS_CONFIG_MENU:
+            handleConfigMenu(); // We haven't defined this yet, wait... defining below
+            break;
+
+        default:
+            sysState = SYS_MENU;
+            break;
+    }
+}
+
+// --- Helper Functions ---
+
+
+
+void softReset() {
+    Serial.println("\n[RESET] Rebooting ESP32 in 1 second...");
+    // GPS lock will be preserved by Smart Init on next boot!
+    delay(1000);
+    ESP.restart();
+}
+
+void handleMainMenu() {
+    static bool printedMenu = false;
+    if (!printedMenu) {
+        Serial.println("\n=== MAIN MENU ===");
+        Serial.println("[1] Start Tracking (Waits for GPS Fix)");
+        Serial.println("[2] Calibrate IMU");
+        Serial.println("[3] Restart System (Keeps GPS Lock)");
+        Serial.println("[4] System Status");
+        Serial.println("[6] Configure Sensors"); // Option 6
+        Serial.println("=================");
+        Serial.print("Select: ");
+        printedMenu = true;
+    }
+
+    if (Serial.available()) {
+        char cmd = Serial.read();
+        // serial echo
+        if (cmd != '\n' && cmd != '\r') Serial.println(cmd); 
+
+        switch (cmd) {
+            case '1':
+                Serial.println("[CMD] Starting Tracking Engine...");
+                sysState = SYS_WAIT_FIX;
+                printedMenu = false;
+                break;
+            case '2':
+                Serial.println("[CMD] Starting Calibration (Standard Workflow)...");
+                if (performStartupCalibrationWorkflow()) {
+                    Serial.println("[CAL] Success. Calibration complete.");
+                    // Safe to reset - EEPROM.commit() is synchronous so data is already saved
+                    softReset();
+                }
+                printedMenu = false;
+                break;
+            case '3':
+                softReset();
+                break;
+            case '4':
+                // Status check
+                Serial.printf("\n[STATUS] GPS Fix: %d (Sats: %d)\n", getLatestGPSData().fixType, getLatestGPSData().numSV);
+                Serial.printf("[STATUS] Mag Calibrated: %s\n", isMagCalibrated() ? "YES" : "NO");
+                printedMenu = false; // Reprint menu
+                break;
+            case '6':
+                sysState = SYS_CONFIG_MENU;
+                printedMenu = false;
+                break;
+            default:
+                // Ignore newline chars
+                if (cmd != '\n' && cmd != '\r') printedMenu = false; 
+                break;
+        }
+    }
+}
+
+void handleWaitFix() {
+    static unsigned long lastPrint = 0;
+    
+    // Always poll GPS in background
+    updateGPS();
+    
+    const GPSData& data = getLatestGPSData();
+    
+    // Exit Condition: 3D Fix (3) or GNSS+DeadReckoning (4) or Time Only (5 - wait, no)
+    // We want at least FixWait (3).
+    if (data.fixType >= 3) {
+        Serial.printf("\n[GPS] 3D FIX ACQUIRED! (Sats: %d). Starting Stream.\n", data.numSV);
+        Serial.println("Press 'x' to stop streaming.");
+        sysState = SYS_RUNNING;
+        return;
+    }
+    
+    // User Abort
+    if (Serial.available()) {
+        char c = Serial.read();
+        if (c == 'x') {
+            Serial.println("\n[ABORT] Returning to Menu.");
+            sysState = SYS_MENU;
+            return;
+        }
+    }
+    
+    // Progress Report (1Hz)
+    if (millis() - lastPrint > 1000) {
+        lastPrint = millis();
+        Serial.printf("[WAIT] Searching for satellites... (Fix: %d, Sats: %d) [Press 'x' to abort]\r", 
+                      data.fixType, data.numSV);
+    }
+}
+
+bool initializeSensors() {
+    bool success = true;
+
+    Serial.println("Initializing DMP...");
+    if (!initDMP()) {
+        Serial.println("[ERROR] IMU initialization failed!");
+        success = false;
+    } else {
+        Serial.println("IMU initialized successfully");
+    }
+    
+    // --- LOAD SAVED CONFIGURATION ---
+    // Override initIMU() defaults with user's saved presets
+    Serial.println("Restoring Saved Sensor Config...");
+    AccelCfg::applyAccelPreset(g_sysConfig.accelPreset);
+    GyroCfg::applyGyroPreset(g_sysConfig.gyroPreset);
+    MagCfg::applyMagPreset(g_sysConfig.magPreset);
+    
+    // Note: If user set a custom DLPF via Menu [8], it is NOT saved in a separate field currently.
+    // It is overwritten by the Preset.
+    // The user's request was to make 50Hz default, so this behavior (loading preset) is correct.
+    // If they want custom DLPF, they must set it each time or we need a new config field.
+    // For now, Presets are the 'Saved State'.
+
+    // Optionally clear calibration data 
+    #if CLEAR_CALIBRATION_EEPROM_ON_BOOT
+    Serial.println("Clearing calibration data from EEPROM...");
+    clearCalibrationEEPROM();
+    #endif
+
+    Serial.println("Starting calibration (SILENT LOAD)...");
+    
+    // Initialize Calibration Manager
+    initCalibrationManager();
+    
+    // Initialize ZUPT
+    initZUPT();
+
+    // Check I2C bus statusd and Apply System Config (Accel/Gyro/Mag/GPS/Debug)
+    initConfigStore();
+    
+    Serial.println("[CFG] Applying Saved Settings...");
+    // 1. Accel
+    if (!AccelCfg::applyAccelPreset(g_sysConfig.accelPreset)) {
+        Serial.println("[CFG] Failed to apply Accel Preset");
+    }
+    // 2. Gyro
+    if (!GyroCfg::applyGyroPreset(g_sysConfig.gyroPreset)) {
+         Serial.println("[CFG] Failed to apply Gyro Preset");
+    }
+    // 3. Mag
+    if (!MagCfg::applyMagPreset(g_sysConfig.magPreset)) {
+        Serial.println("[CFG] Failed to apply Mag Preset");
+    }
+    // 4. GPS & 5. GPS Advanced moved to after SetupGPS
+    
+    // 6. Radio Debug
+    g_debugMode = g_sysConfig.radioDebug;
+    
+    // 6. Radio Debug
+    g_debugMode = g_sysConfig.radioDebug;
+    
+    // Check status but DO NOT BLOCK
+    CalibrationStatus calStatus = performStartupVerification();
+    
+    if (calStatus == CAL_STATUS_GOOD) {
+        Serial.println("[CAL] Verification Passed");
+    } else {
+        Serial.printf("[WARN] Calibration Status: %d (Not Optimal)\n", calStatus);
+        Serial.println("[WARN] Select '2' in Main Menu to recalibrate.");
+    }
+    
+    lastUpdateTime = micros(); 
+
+    Serial.println("Setting up Radio...");
+    if (!initESPNow()) {
+         Serial.println("[ERROR] Radio initialization failed!");
+         // success = false; // Don't block boot for radio?
+    }
+
+    Serial.println("Setting up GPS...");
+    if (!setupGPS()) {
+        Serial.println("[ERROR] GPS initialization failed!");
+        success = false;
+    } else {
+        Serial.println("GPS initialized successfully");
+        
+        // --- APPLY GPS CONFIGURATION HERE (Safe now) ---
+        Serial.println("[CFG] Syncing GPS Advanced Settings...");
+        setGPSRefreshRate(g_sysConfig.gpsRate);
+        setGPSConstellation(g_sysConfig.gnssConstellation);
+        setGPSDynamicModel(g_sysConfig.dynamicModel);
+        setGPSI2CClock(g_sysConfig.i2cClockSpeed);
+        setGPSSBAS(g_sysConfig.sbasEnabled);
+        setGPSQZSS(g_sysConfig.qzssEnabled);
+        // setGPSAntiJamming(g_sysConfig.antiJamming);
+    }
+
+    Serial.println("Initializing position tracking...");
+    initPositionTracking();
+    
+    #if ENABLE_EEPROM_SELFTEST
+        eepromSelfTest();
+    #endif
+
+    return success;
+}
+
+void handleSafeMode() {
+    Serial.println("\n=== SAFE MODE DIAGNOSTIC MENU ===");
+    Serial.println("[1] Retry Full Init");
+    Serial.println("[2] Retry IMU");
+    Serial.println("[3] Retry GPS");
+    Serial.println("[4] Scan I2C Buses");
+    Serial.println("[5] Force Run (Risk of instability)");
+    Serial.println("=================================");
+    
+    while (true) {
+        if (Serial.available()) {
+            char cmd = Serial.read();
+            switch (cmd) {
+                case '1':
+                    sysState = SYS_INIT_SENSORS;
+                    return;
+                case '2':
+                    initIMU();
+                    break;
+                case '3':
+                    setupGPS();
+                    break;
+                case '4':
+                    scanI2C();
+                    break;
+                case '5':
+                    sysState = SYS_MENU; // Go to Menu instead of Run
+                    return;
+            }
+            // Re-print menu after action
+            Serial.println("\n=== SAFE MODE DIAGNOSTIC MENU ===");
+            Serial.println("[1] Retry Full Init");
+            Serial.println("[2] Retry IMU");
+            Serial.println("[3] Retry GPS");
+            Serial.println("[4] Scan I2C Buses");
+            Serial.println("[5] Force Run");
+        }
+        delay(10);
+    }
+}
+
+void scanI2C() {
+    Serial.println("\n--- I2C SCANNER ---");
+    Serial.print("Scanning Wire (IMU): SDA="); Serial.print(IMU_SDA_PIN); Serial.print(" SCL="); Serial.println(IMU_SCL_PIN);
+    for (byte address = 1; address < 127; address++) {
+        Wire.beginTransmission(address);
+        if (Wire.endTransmission() == 0) {
+            Serial.printf("Found I2C device at 0x%02X\n", address);
+        }
+    }
+    
+    Serial.print("Scanning Wire1 (GPS): SDA="); Serial.print(GPS_SDA_PIN); Serial.print(" SCL="); Serial.println(GPS_SCL_PIN);
+    for (byte address = 1; address < 127; address++) {
+        Wire1.beginTransmission(address);
+        if (Wire1.endTransmission() == 0) {
+            Serial.printf("Found I2C device at 0x%02X\n", address);
+        }
+    }
+    Serial.println("--- SCAN COMPLETE ---");
+}
+
+// --- Helper: Algebraic Tilt-Compensated Heading (The "Truth Check") ---
+// Returns heading in degrees (0-360), or -1.0 if invalid input
+float getTiltCompensatedHeading(float ax, float ay, float az, float mx, float my, float mz) {
+    // Input validation - check for NaN or inf
+    if (!isfinite(ax) || !isfinite(ay) || !isfinite(az) ||
+        !isfinite(mx) || !isfinite(my) || !isfinite(mz)) {
+        // Silent failure - return error code
+        return -1.0f;
+    }
+    
+    // Check for zero-magnitude cases (sensor failure or freefall)
+    float acc_mag = sqrt(ax*ax + ay*ay + az*az);
+    if (acc_mag < 500.0f || acc_mag > 1500.0f) {
+        // Acceleration not near 1000mg (1G) - tilt compensation unreliable
+        // Could be: freefall, high-G maneuver, or sensor error
+        return -1.0f;
+    }
+    
+    // 1. Calculate Pitch and Roll from Accelerometer (Rad)
+    // Assumes Standard NED/FRD Frame: X=Fwd, Y=Right, Z=Down
+    float roll_rad = atan2(ay, az);
+    float pitch_rad = atan2(-ax, sqrt(ay * ay + az * az));
+    
+    // 2. De-rotate Magnetometer vector (Tilt Compensation)
+    float cos_roll = cos(roll_rad);
+    float sin_roll = sin(roll_rad);
+    float cos_pitch = cos(pitch_rad);
+    float sin_pitch = sin(pitch_rad);
+    
+    // The "Horizontal" Mag components (FIXED per NXP AN4248):
+    // Standard tilt-compensated heading formula - verified against multiple sources
+    float Xh = mx * cos_pitch + my * sin_pitch * sin_roll + mz * sin_pitch * cos_roll;
+    float Yh = my * cos_roll - mz * sin_roll;
+    
+    // Check for degenerate case (both Xh and Yh near zero)
+    if (abs(Xh) < 0.01f && abs(Yh) < 0.01f) {
+        // Horizontal mag field too weak - can't determine heading
+        return -1.0f;
+    }
+    
+    // 3. Calculate Heading
+    float heading_rad = atan2(Yh, Xh);
+    float heading_deg = heading_rad * 180.0f / PI;
+    
+    // 4. Wrap to 0-360
+    if (heading_deg < 0) heading_deg += 360.0f;
+    
+    // Final sanity check
+    if (!isfinite(heading_deg)) {
+        return -1.0f;
+    }
+    
+    return heading_deg;
+}
+
+#ifdef PROCESSING_VISUALIZATION
+void updateVisualization() {
+
+    // Send data periodically for Processing visualization
+    static unsigned long lastProcessingUpdate = 0;
+    if (millis() - lastProcessingUpdate > 50) { // 20 Hz
+      lastProcessingUpdate = millis();
+
+      // Get quaternion values from Madgwick filter
+      float qw, qx, qy, qz;
+      MadgwickFilter.getQuaternion(qw, qx, qy, qz);
+
+      // Euler angles (FIX #3: Safe conversion with asin clamping to prevent NaN)
+      float sinp = 2.0f * (qw * qy - qz * qx);
+      sinp = (sinp > 1.0f) ? 1.0f : ((sinp < -1.0f) ? -1.0f : sinp);  // Clamp to [-1, 1]
+      
+      float roll = atan2(2.0f * (qw * qx + qy * qz), 1.0f - 2.0f * (qx * qx + qy * qy)) * 180.0f / PI;
+      float pitch = asin(sinp) * 180.0f / PI;
+      float yaw = atan2(2.0f * (qw * qz + qx * qy), 1.0f - 2.0f * (qy * qy + qz * qz)) * 180.0f / PI;
+
+      const GPSData& gpsData = getLatestGPSData();
+      
+      // Update global position tracking state
+      updatePositionData(gpsData, yaw, pitch, roll, qw, qx, qy, qz, isMagCalibrated(), isMagCalibrated() || gpsData.valid);
+      
+      // Calculate Yaw in degrees (0-360) for Heading
+      float yawDeg = yaw; 
+      if (yawDeg < 0) yawDeg += 360.0f; 
+
+      // Magnetic and True Heading
+      float magHeading = atan2(g_sensors.cal_mag[1], g_sensors.cal_mag[0]) * 180.0f / PI;
+      if (magHeading < 0) magHeading += 360.0f;
+ 
+      float trueHeading = magHeading;
+      if (gpsData.valid) {
+          trueHeading = magHeading + gpsData.magDec_deg;
+          while (trueHeading < 0) trueHeading += 360.0f;
+          while (trueHeading >= 360.0f) trueHeading -= 360.0f;
+      }
+      
+
+
+      // --- 1. CSV OUTPUT (Debug/USB) ---
+      // Format: DATA, raw_ax, raw_ay, raw_az, raw_gx, raw_gy, raw_gz, raw_mx, raw_my, raw_mz, cal_ax, ...
+      // Total 28 values
+      Serial.print("DATA,");
+      
+      // 0-2: Raw Accel
+      Serial.print(g_sensors.raw_acc[0]); Serial.print(",");
+      Serial.print(g_sensors.raw_acc[1]); Serial.print(",");
+      Serial.print(g_sensors.raw_acc[2]); Serial.print(",");
+      
+      // 3-5: Raw Gyro
+      Serial.print(g_sensors.raw_gyro[0]); Serial.print(",");
+      Serial.print(g_sensors.raw_gyro[1]); Serial.print(",");
+      Serial.print(g_sensors.raw_gyro[2]); Serial.print(",");
+      
+      // 6-8: Raw Mag
+      Serial.print(g_sensors.raw_mag[0]); Serial.print(",");
+      Serial.print(g_sensors.raw_mag[1]); Serial.print(",");
+      Serial.print(g_sensors.raw_mag[2]); Serial.print(",");
+      
+      // 9-11: Calibrated Accel
+      Serial.print(g_sensors.cal_acc[0]); Serial.print(",");
+      Serial.print(g_sensors.cal_acc[1]); Serial.print(",");
+      Serial.print(g_sensors.cal_acc[2]); Serial.print(",");
+      
+      // 12-14: Calibrated Gyro
+      Serial.print(g_sensors.cal_gyro[0]); Serial.print(",");
+      Serial.print(g_sensors.cal_gyro[1]); Serial.print(",");
+      Serial.print(g_sensors.cal_gyro[2]); Serial.print(",");
+      
+      // 15-17: Calibrated Mag
+      Serial.print(g_sensors.cal_mag[0]); Serial.print(",");
+      Serial.print(g_sensors.cal_mag[1]); Serial.print(",");
+      Serial.print(g_sensors.cal_mag[2]); Serial.print(",");
+      
+      // 18: Mag Magnitude
+      Serial.print(g_sensors.mag_mag); Serial.print(",");
+      
+      // --- 1. VISUALIZATION OUTPUT (CSV) ---
+      // USER REQUEST: Offset Heading by 180 degrees (Forward was pointing backward)
+      // We apply this to both Quaternion and Euler angles.
+      
+      // 1. Rotate Quaternion 180 degrees around Z-axis
+      // Q_rot = [0, 0, 0, 1] (180 deg around Z)
+      // New Q = Q_orig * Q_rot
+      // Result: w'=-z, x'=y, y'=-x, z'=w
+      float qw_out = -qz;
+      float qx_out =  qy;
+      float qy_out = -qx;
+      float qz_out =  qw;
+      
+      // 2. Calculate Euler Yaw from ORIGINAL quaternion (before transformation)
+      // This ensures yaw matches magHeading/algHeading reference frame
+      float yaw_orig = atan2(2.0f * (qw*qz + qx*qy), 1.0f - 2.0f * (qy*qy + qz*qz)) * 180.0f / PI;
+      
+      // No offset needed - yaw_orig is already in correct reference frame
+      float yaw_out = yaw_orig;
+      if (yaw_out < 0.0f) yaw_out += 360.0f;
+      if (yaw_out >= 360.0f) yaw_out -= 360.0f;
+      
+      // 3. Output headings (no artificial offsets)
+      float magHeading_out = magHeading;
+      if (magHeading_out < 0.0f) magHeading_out += 360.0f;
+
+      // 19-22: Quaternion (Offset)
+      Serial.print(qw_out, 4); Serial.print(",");
+      Serial.print(qx_out, 4); Serial.print(",");
+      Serial.print(qy_out, 4); Serial.print(",");
+      Serial.print(qz_out, 4); Serial.print(",");
+      
+      // 23-25: Euler (Offset Yaw)
+      Serial.print(roll); Serial.print(",");
+      Serial.print(pitch); Serial.print(",");
+      Serial.print(yaw_out); Serial.print(",");
+      
+      // 26-27: Headings (Offset)
+      Serial.print(magHeading_out); Serial.print(",");
+      Serial.print(trueHeading); Serial.print(",");
+      
+      // 28: Algorithmic Heading (Tilt Compensated) - New!
+      // Use MAPPED BODY FRAME Data (g_sensors.cal_acc/mag)
+      // Returns -1.0 if sensors invalid (NaN, non-1G acceleration, etc.)
+      float algHead = getTiltCompensatedHeading(
+          g_sensors.cal_acc[0], g_sensors.cal_acc[1], g_sensors.cal_acc[2],
+          g_sensors.cal_mag[0], g_sensors.cal_mag[1], g_sensors.cal_mag[2]
+      );
+      // Note: -1.0 indicates error (invalid sensors, freefall, high-G, etc.)
+      // Output raw value (no artificial offset)
+      Serial.print(algHead);
+      
+      // EOL
+      Serial.println("");
+
+      // --- 2. PACKET PREPARATION (Radio) ---
+      TrackingPacket packet;
+      packet.ms_time = millis();
+      packet.lat = (int32_t)(gpsData.latitude * 1e7);
+      packet.lon = (int32_t)(gpsData.longitude * 1e7);
+      packet.alt = (int16_t)gpsData.altitude;
+      packet.speed = (int16_t)(gpsData.speed_m_s * 100.0f); // m/s to cm/s
+      packet.gps_course = (uint16_t)(gpsData.heading_deg * 100.0f);
+      packet.imu_heading = (uint16_t)(yawDeg * 100.0f);
+      packet.pitch = (int8_t)pitch;
+      packet.roll = (int8_t)roll;
+      packet.flags = 0;
+      if (gpsData.valid) packet.flags |= PACKET_FLAG_VALID;
+      if (gpsData.fixType == 3) packet.flags |= PACKET_FLAG_FIX_3D;
+      
+      sendRadioPacket(packet);
+    }
+    #endif
+
+    // 5. Data Logging (1Hz Throttled)
+    if (DataLogger::isLogging()) {
+        static unsigned long lastLog = 0;
+        if (millis() - lastLog > 1000) { 
+             lastLog = millis();
+             
+             LogPacket pkt;
+             pkt.timestamp = millis();
+             const GPSData& g = getLatestGPSData();
+             pkt.lat = g.latitude;
+             pkt.lon = g.longitude;
+             pkt.alt = g.altitude;
+             pkt.accX = ax_mg; pkt.accY = ay_mg; pkt.accZ = az_mg;
+             pkt.gyroX = gx_dps; pkt.gyroY = gy_dps; pkt.gyroZ = gz_dps;
+             pkt.magX = mx_uT; pkt.magY = my_uT; pkt.magZ = mz_uT;
+             
+             DataLogger::log(pkt);
+        }
+    }
+}
+
+#if ENABLE_EEPROM_SELFTEST
+/**
+ * @brief EEPROM self-test: verifies that the currently stored calibration blob
+ * can be written back and read again without corruption. No dummy values are
+ * injected, so the user’s calibration data remains intact.
+ */
+void eepromSelfTest() {
+    Serial.println("\n--- EEPROM Self-Test ---");
+
+    // Backup the in-memory calibration so we can restore it after the test.
+    ExtendedCalibrationData backup = g_extended_cal_data;
+
+    // 1. Ensure EEPROM is initialised and the latest data is loaded.
+    if (!loadCalibrationFromEEPROM()) {
+        Serial.println("[SELFTEST] No valid data in EEPROM – skipping test.");
+        return;
+    }
+
+    // 2. Re-compute checksum in case RAM copy differs.
+    g_extended_cal_data.checksum = calculateChecksum(&g_extended_cal_data);
+
+    Serial.print("[SELFTEST] Saving current calibration data... ");
+    if (!saveCalibrationToEEPROM()) {
+        Serial.println("FAILED");
+        g_extended_cal_data = backup; // restore
+        return;
+    }
+    Serial.println("OK");
+
+    // 3. Clear RAM copy and load again to verify round-trip.
+    memset(&g_extended_cal_data, 0, sizeof(ExtendedCalibrationData));
+
+    Serial.print("[SELFTEST] Re-loading calibration data... ");
+    if (!loadCalibrationFromEEPROM()) {
+        Serial.println("FAILED");
+        g_extended_cal_data = backup;
+        return;
+    }
+    Serial.println("OK");
+
+    // 4. Compare checksums / sizes.
+    if (g_extended_cal_data.checksum == backup.checksum) {
+        Serial.println("[RESULT] EEPROM self-test PASSED");
+    } else {
+        Serial.println("[RESULT] EEPROM self-test FAILED – checksum mismatch");
+    }
+
+    // 5. Restore backup to leave system unchanged.
+    g_extended_cal_data = backup;
+}
+#endif
