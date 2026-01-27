@@ -63,8 +63,12 @@ void SystemSettings::loadDefaults() {
     config.qzssEnabled = true;
     config.antiJamming = 0;        // No Anti-Jamming
     
+    // ==================== I2C BUS DEFAULTS ====================
+    config.sensorI2CClockKHz = 400;  // 400 kHz (recommended for sensors)
+    config.gpsI2CClockKHz = 400;     // 400 kHz (recommended for 6-10 Hz)
+    config.gpsProtocolMode = 0;      // 0 = UBX (default)
+    
     // ==================== SYSTEM DEFAULTS ====================
-    config.i2cClockSpeed = 1;      // Fast (400kHz)
     config.loopRate = DEFAULT_MAIN_LOOP_RATE_HZ;
     config.mountUpsideDown = false;// Standard mounting by default
 

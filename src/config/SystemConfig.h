@@ -17,19 +17,19 @@
 // Status LED
 #define STATUS_LED_PIN          2
 
-// I2C Pins - Shared bus for all I2C devices
-// OLED (0x3C) + ICM-20948 (0x68) + BMM350 (0x14)
-// GPIO 4 & 5 are adjacent on LEFT side of board (easy wiring!)
-#define I2C_SDA_PIN             4   // GPIO 4 (SDA) - Verified Working
-#define I2C_SCL_PIN             7   // GPIO 7 (SCL) - Verified Working
+// =============================================================================
+// I2C CONFIGURATION - DUAL BUS SETUP
+// =============================================================================
 
-// GPS UART Pins (for Serial communication)
-// NOTE: BASE Code uses I2C for GPS, but GPSManager.cpp has Serial fallback
-// These are placeholders for hardware UART mode if needed
-#define GPS_RX_PIN              16  // GPIO16 (RX)
-#define GPS_TX_PIN              17  // GPIO17 (TX)
-#define GPS_SERIAL              Serial1
-#define GPS_BAUD_RATE           38400
+// I2C Bus 1: Sensors (IMU, Magnetometer, Display)
+// GPIO 4/7 verified working with ICM-20948, BMM350, OLED
+#define I2C_SDA_PIN             4   // GPIO 4 (SDA) - Sensor Bus
+#define I2C_SCL_PIN             7   // GPIO 7 (SCL) - Sensor Bus
+
+// I2C Bus 2: GPS Module  
+// GPIO 8/9 are default ESP32-S3 I2C pins, confirmed via scanner
+#define GPS_I2C_SDA_PIN         8   // GPIO 8 (SDA) - GPS Only
+#define GPS_I2C_SCL_PIN         9   // GPIO 9 (SCL) - GPS Only
 
 // =============================================================================
 // I2C ADDRESSES

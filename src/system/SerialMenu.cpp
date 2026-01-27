@@ -125,6 +125,11 @@ void SerialMenu::processCommand(const String& cmd) {
         IMUManager::printHeadingDebug();
         Serial.print("\nEnter command: ");
     }
+    else if (lower == "gpsdiag") {
+        // GPS UART diagnostics
+        GPSManager::printDebug();
+        Serial.print("\nEnter command: ");
+    }
     else if (lower == "exit" || lower == "q" || lower == "quit") {
         Serial.println("\nExiting menu mode");
         active = false;
@@ -166,6 +171,7 @@ void SerialMenu::showHelp() {
     Serial.println("  audit     - Interactive Axis Diagnostic");
     Serial.println("  report    - Static System Verification Report");
     Serial.println("  hdg       - VQF Heading Debug");
+    Serial.println("  gpsdiag   - GPS UART Diagnostics");
     Serial.println("  q, exit   - Exit menu mode");
     Serial.println();
     Serial.println("Notes:");
@@ -624,15 +630,26 @@ void SerialMenu::showMagAdvancedConfig() {
 void SerialMenu::showGPSConfig() {
     while(true) {
         RuntimeConfig& cfg = SystemSettings::getConfig();
-        Serial.println("\n---- GPS Configuration ----");
-        Serial.printf("[1] Update Rate:   %d Hz\n", cfg.gpsRate);
-        Serial.printf("[2] Constellation: %s\n", cfg.gnssConstellation == 0 ? "All (4 Sats)" : (cfg.gnssConstellation == 1 ? "GPS+GLO+GAL" : "GPS+GLO"));
-        Serial.printf("[3] Dynamic Model: %s\n", cfg.dynamicModel == 0 ? "Portable" : (cfg.dynamicModel == 2 ? "Automotive" : "Other"));
-        Serial.printf("[4] SBAS:          %s\n", cfg.sbasEnabled ? "Enabled" : "Disabled");
-        Serial.printf("[5] QZSS:          %s\n", cfg.qzssEnabled ? "Enabled" : "Disabled");
-        Serial.printf("[6] Anti-Jamming:  %s\n", cfg.antiJamming == 0 ? "No" : (cfg.antiJamming == 1 ? "Fixed" : "Adaptive"));
+        Serial.println("\n========================================");
+        Serial.println("       GPS CONFIGURATION MENU");
+        Serial.println("========================================");
+        Serial.printf("[1] I2C Clock Speed: %d kHz\n", cfg.gpsI2CClockKHz);
+        
+        // Show clock speed recommendation
+        const char* recommendation = GPSManager::getClockSpeedRecommendation(cfg.gpsRate);
+        Serial.printf("    (Current: %d Hz → Recommended: %s)\n", cfg.gpsRate, recommendation);
+        
+        Serial.printf("[2] Update Rate:     %d Hz\n", cfg.gpsRate);
+        Serial.printf("[3] Protocol Mode:   %s\n", cfg.gpsProtocolMode == 0 ? "UBX (Binary)" : "NMEA Debug");
+        Serial.printf("[4] Constellation:   %s\n", cfg.gnssConstellation == 0 ? "All (4 Sats)" : (cfg.gnssConstellation == 1 ? "GPS+GLO+GAL" : "GPS+GLO"));
+        Serial.printf("[5] Dynamic Model:   %s\n", cfg.dynamicModel == 0 ? "Portable" : (cfg.dynamicModel == 2 ? "Automotive" : "Other"));
+        Serial.printf("[6] SBAS:            %s\n", cfg.sbasEnabled ? "Enabled" : "Disabled");
+        Serial.printf("[7] QZSS:            %s\n", cfg.qzssEnabled ? "Enabled" : "Disabled");
+        Serial.printf("[8] Anti-Jamming:    %s\n", cfg.antiJamming == 0 ? "No" : (cfg.antiJamming == 1 ? "Fixed" : "Adaptive"));
+        Serial.println("[9] Factory Reset GPS");
         Serial.println("[b] Back");
-        Serial.print("Select setting to change: ");
+        Serial.println("========================================");
+        Serial.print("Select option: ");
         
         while(!Serial.available()) { Watchdog::feed(); delay(10); }
         String input = readLine();
@@ -641,8 +658,39 @@ void SerialMenu::showGPSConfig() {
         
         if (input.equalsIgnoreCase("b") || input.equalsIgnoreCase("back")) return;
         
+        // [1] I2C Clock Speed submenu
         if (input == "1") {
-            Serial.print("Enter Rate (1, 5, 10, 20 Hz): ");
+            Serial.println("\n---- I2C Clock Speed Selection ----");
+            Serial.printf("Current: %d kHz\n", cfg.gpsI2CClockKHz);
+            Serial.printf("Recommended for %d Hz update rate: %s\n\n", cfg.gpsRate, recommendation);
+            Serial.println("  [1] 100 kHz  (Standard Mode - safest)");
+            Serial.println("  [2] 200 kHz  (Good for 1-5 Hz)");
+            Serial.println("  [3] 400 kHz  (Good for 6-10 Hz) ← DEFAULT");
+            Serial.println("  [4] 600 kHz  (Good for 11-15 Hz)");
+            Serial.println("  [5] 800 kHz  (Good for 16-20 Hz)");
+            Serial.println("  [6] 1000 kHz (Good for 21-25 Hz, max performance)");
+            Serial.println("\nNOTE: Higher speeds = lower latency but more sensitive to wire length/noise");
+            Serial.print("\nSelect (1-6): ");
+            
+            while(!Serial.available()) { Watchdog::feed(); delay(10); }
+            String sVal = readLine();
+            int choice = sVal.toInt();
+            Serial.println();
+            
+            uint16_t speeds[] = {100, 200, 400, 600, 800, 1000};
+            if (choice >= 1 && choice <= 6) {
+                cfg.gpsI2CClockKHz = speeds[choice - 1];
+                GPSManager::setI2CClockSpeed(cfg.gpsI2CClockKHz);
+                SystemSettings::save();
+                Serial.printf("✓ I2C clock set to %d kHz\n", cfg.gpsI2CClockKHz);
+            } else {
+                Serial.println("Invalid selection");
+            }
+        }
+        
+        // [2] Update Rate (Hz)
+        else if (input == "2") {
+            Serial.print("Enter GPS Update Rate (1-25 Hz): ");
             while(!Serial.available()) { Watchdog::feed(); delay(10); }
             String sVal = readLine();
             int val = sVal.toInt();
@@ -651,29 +699,61 @@ void SerialMenu::showGPSConfig() {
                 cfg.gpsRate = val;
                 GPSManager::setRefreshRate(val);
                 SystemSettings::save();
-                Serial.printf("Saved. New value: %d Hz\n", cfg.gpsRate);
+                Serial.printf("✓ GPS update rate set to %d Hz\n", cfg.gpsRate);
+                
+                // Show new recommendation
+                const char* newRec = GPSManager::getClockSpeedRecommendation(val);
+                Serial.printf("ℹ Recommended I2C clock for %d Hz: %s\n", val, newRec);
+                if (cfg.gpsI2CClockKHz < 100 || cfg.gpsI2CClockKHz > 1000) {
+                    Serial.printf("⚠ Current clock speed (%d kHz) may not be optimal\n", cfg.gpsI2CClockKHz);
+                }
             } else {
-                Serial.printf("Invalid value: '%s'\n", sVal.c_str());
+                Serial.printf("Invalid rate: '%s' (must be 1-25)\n", sVal.c_str());
             }
         }
-        else if (input == "2") {
+        
+        // [3] Protocol Mode
+        else if (input == "3") {
+            Serial.println("\n---- Protocol Mode Selection ----");
+            Serial.printf("Current: %s\n\n", cfg.gpsProtocolMode == 0 ? "UBX (Binary)" : "NMEA Debug");
+            Serial.println("  [0] UBX (Binary)   - Default, efficient, recommended");
+            Serial.println("  [1] NMEA Debug     - Text mode for debugging");
+            Serial.println("\nNOTE: Changing protocol requires GPS restart");
+            Serial.print("\nSelect (0/1): ");
+            
+            while(!Serial.available()) { Watchdog::feed(); delay(10); }
+            String sVal = readLine();
+            int val = sVal.toInt();
+            Serial.println();
+            
+            if (val == 0 || val == 1) {
+                cfg.gpsProtocolMode = val;
+                GPSManager::setProtocolMode(val);  // This handles restart confirmation
+                SystemSettings::save();
+            } else {
+                Serial.println("Invalid selection");
+            }
+        }
+        
+        // [4] Constellation
+        else if (input == "4") {
             Serial.print("Constellation (0=All, 1=3Sat, 2=2Sat): ");
             while(!Serial.available()) { Watchdog::feed(); delay(10); }
             String sVal = readLine();
             int val = sVal.toInt();
             Serial.println();
-            // Note: toInt returns 0 on error, which is a valid value (All).
-            // Need to check if string was actually "0" or invalid.
             if (sVal.length() > 0 && isDigit(sVal[0]) && val >= 0 && val <= 2) {
                 cfg.gnssConstellation = val;
                 GPSManager::setConstellation(val);
                 SystemSettings::save();
-                Serial.printf("Saved. New value: %d\n", cfg.gnssConstellation);
+                Serial.printf("✓ Saved. New value: %d\n", cfg.gnssConstellation);
             } else {
                 Serial.println("Invalid.");
             }
         }
-        else if (input == "3") {
+        
+        // [5] Dynamic Model
+        else if (input == "5") {
             Serial.print("Model (0=Port, 2=Auto, 3=Air, 5=Stat): ");
             while(!Serial.available()) { Watchdog::feed(); delay(10); }
             String sVal = readLine();
@@ -683,22 +763,28 @@ void SerialMenu::showGPSConfig() {
                 cfg.dynamicModel = val;
                 GPSManager::setDynamicModel(val);
                 SystemSettings::save();
-                Serial.printf("Saved. New value: %d\n", cfg.dynamicModel);
+                Serial.printf("✓ Saved. New value: %d\n", cfg.dynamicModel);
             }
         }
-        else if (input == "4") {
-            cfg.sbasEnabled = !cfg.sbasEnabled; // Toggle
+        
+        // [6] SBAS Toggle
+        else if (input == "6") {
+            cfg.sbasEnabled = !cfg.sbasEnabled;
             GPSManager::setSBAS(cfg.sbasEnabled);
             SystemSettings::save();
-            Serial.printf("SBAS now %s\n", cfg.sbasEnabled ? "Enabled" : "Disabled");
+            Serial.printf("✓ SBAS now %s\n", cfg.sbasEnabled ? "Enabled" : "Disabled");
         }
-        else if (input == "5") {
-            cfg.qzssEnabled = !cfg.qzssEnabled; // Toggle
+        
+        // [7] QZSS Toggle
+        else if (input == "7") {
+            cfg.qzssEnabled = !cfg.qzssEnabled;
             GPSManager::setQZSS(cfg.qzssEnabled);
             SystemSettings::save();
-            Serial.printf("QZSS now %s\n", cfg.qzssEnabled ? "Enabled" : "Disabled");
+            Serial.printf("✓ QZSS now %s\n", cfg.qzssEnabled ? "Enabled" : "Disabled");
         }
-        else if (input == "6") {
+        
+        // [8] Anti-Jamming
+        else if (input == "8") {
             Serial.print("Mode (0=No, 1=Fixed, 2=Adaptive): ");
             while(!Serial.available()) { Watchdog::feed(); delay(10); }
             String sVal = readLine();
@@ -708,7 +794,18 @@ void SerialMenu::showGPSConfig() {
                 cfg.antiJamming = val;
                 GPSManager::setAntiJamming(val);
                 SystemSettings::save();
-                Serial.printf("Saved. New value: %d\n", cfg.antiJamming);
+                Serial.printf("✓ Saved. New value: %d\n", cfg.antiJamming);
+            }
+        }
+        
+        // [9] Factory Reset
+        else if (input == "9") {
+            Serial.println();
+            if (GPSManager::factoryReset()) {
+                // Reset was successful - update config to defaults
+                cfg.gpsRate = 1;  // GPS reverted to 1 Hz
+                cfg.gpsProtocolMode = 0;  // UBX mode
+                SystemSettings::save();
             }
         }
     }
@@ -716,15 +813,21 @@ void SerialMenu::showGPSConfig() {
 
 void SerialMenu::showSystemConfig() {
     while(true) {
-        Serial.println("\n---- System Info ----");
+        RuntimeConfig& cfg = SystemSettings::getConfig();
+        Serial.println("\n========================================");
+        Serial.println("         SYSTEM CONFIGURATION");
+        Serial.println("========================================");
         Serial.printf("Project: %s\n", PROJECT_NAME);
         Serial.printf("Version: %s\n", PROJECT_VERSION);
         Serial.printf("Heap:    %d bytes\n", ESP.getFreeHeap());
-        Serial.println("  [1] Factory Reset");
-        Serial.printf("  [2] Mounting:    %s\n", SystemSettings::getConfig().mountUpsideDown ? "UPSIDE DOWN" : "STANDARD");
-        Serial.printf("  [3] Loop Rate:   %d Hz\n", SystemSettings::getLoopRate());
-        Serial.println("  [b] Back");
-        Serial.print("Select: ");
+        Serial.println("----------------------------------------");
+        Serial.printf("[1] Sensor I2C Clock: %d kHz\n", cfg.sensorI2CClockKHz);
+        Serial.printf("[2] Mounting:         %s\n", cfg.mountUpsideDown ? "UPSIDE DOWN" : "STANDARD");
+        Serial.printf("[3] Loop Rate:        %d Hz\n", SystemSettings::getLoopRate());
+        Serial.println("[4] Factory Reset");
+        Serial.println("[b] Back");
+        Serial.println("========================================");
+        Serial.print("Select option: ");
         
         while(!Serial.available()) { Watchdog::feed(); delay(10); }
         String input = readLine();
@@ -733,27 +836,70 @@ void SerialMenu::showSystemConfig() {
         
         if (input.equalsIgnoreCase("b") || input.equalsIgnoreCase("back")) return;
         
+        // [1] Sensor I2C Clock Speed
         if (input == "1") {
-            Serial.println("Resetting to Defaults...");
-            SystemSettings::loadDefaults();
-            Serial.println("Done. Please reboot.");
+            Serial.println("\n---- Sensor I2C Clock Speed ----");
+            Serial.printf("Current: %d kHz\n\n", cfg.sensorI2CClockKHz);
+            Serial.println("  [1] 100 kHz  (Standard Mode - safest)");
+            Serial.println("  [2] 200 kHz  (Low speed)");
+            Serial.println("  [3] 400 kHz  (Fast Mode) ← DEFAULT");
+            Serial.println("  [4] 600 kHz  (Fast Mode+)");
+            Serial.println("  [5] 800 kHz  (High speed)");
+            Serial.println("  [6] 1000 kHz (Maximum speed)");
+            Serial.println("\nNOTE: IMU, Magnetometer, Display on this bus");
+            Serial.println("      Higher speeds = faster updates but sensitivity to noise");
+            Serial.print("\nSelect (1-6): ");
+            
+            while(!Serial.available()) { Watchdog::feed(); delay(10); }
+            String sVal = readLine();
+            int choice = sVal.toInt();
+            Serial.println();
+            
+            uint16_t speeds[] = {100, 200, 400, 600, 800, 1000};
+            if (choice >= 1 && choice <= 6) {
+                cfg.sensorI2CClockKHz = speeds[choice - 1];
+                SystemSettings::save();
+                Serial.printf("✓ Sensor I2C clock set to %d kHz\n", cfg.sensorI2CClockKHz);
+                Serial.println("⚠  Restart device for change to take effect");
+            } else {
+                Serial.println("Invalid selection");
+            }
         }
+        
+        // [2] Mounting
         else if (input == "2") {
-            RuntimeConfig& cfg = SystemSettings::getConfig();
             cfg.mountUpsideDown = !cfg.mountUpsideDown;
             SystemSettings::save();
-            Serial.printf("Mounting set to: %s\n", cfg.mountUpsideDown ? "UPSIDE DOWN" : "STANDARD");
+            Serial.printf("✓ Mounting set to: %s\n", cfg.mountUpsideDown ? "UPSIDE DOWN" : "STANDARD");
         }
+        
+        // [3] Loop Rate
         else if (input == "3") {
-            Serial.println("Enter Loop Rate (25, 50, 100, 200): ");
+            Serial.print("Enter Loop Rate (25, 50, 100, 200): ");
             while(!Serial.available()) { Watchdog::feed(); delay(10); }
             String valStr = readLine();
             Serial.println();
             int val = valStr.toInt();
             if (IMUManager::setLoopRate(val)) {
-                Serial.printf("Loop Rate set to %d Hz\n", val);
+                Serial.printf("✓ Loop Rate set to %d Hz\n", val);
             } else {
                 Serial.println("Invalid rate.");
+            }
+        }
+        
+        // [4] Factory Reset
+        else if (input == "4") {
+            Serial.println("\n⚠  WARNING: Resetting to Defaults...");
+            Serial.println("This will erase all configurations!");
+            Serial.print("Continue? (Y/N): ");
+            while(!Serial.available()) { Watchdog::feed(); delay(10); }
+            String confirm = readLine();
+Serial.println();
+            if (confirm.equalsIgnoreCase("Y")) {
+                SystemSettings::loadDefaults();
+                Serial.println("✓ Reset complete. Please reboot.");
+            } else {
+                Serial.println("Cancelled.");
             }
         }
     }

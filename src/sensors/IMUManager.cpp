@@ -114,12 +114,12 @@ bool IMUManager::init() {
     Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
     
     RuntimeConfig& cfg = SystemSettings::getConfig();
-    uint32_t i2cFreq = (cfg.i2cClockSpeed == 0) ? 100000 : 400000;
+    uint32_t i2cFreq = cfg.sensorI2CClockKHz * 1000;  // Convert kHz to Hz
     Wire.setClock(i2cFreq);
     Wire.setTimeOut(50);  // 50ms timeout
     delay(100);
     
-    DEBUG_INFO("  I2C initialized: %d kHz", i2cFreq / 1000);
+    DEBUG_INFO("  Sensor I2C initialized: %d kHz", cfg.sensorI2CClockKHz);
     
     // Scan I2C bus to detect connected devices
     DEBUG_INFO("  Scanning I2C bus...");

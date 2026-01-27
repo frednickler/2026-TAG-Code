@@ -50,8 +50,13 @@ struct RuntimeConfig {
     bool qzssEnabled;
     uint8_t antiJamming;       // 0=No, 1=Fixed, 2=Adaptive (Default: 0)
     
+    // ==================== I2C BUS CONFIGURATION ====================
+    // Separate I2C buses for sensors (GPIO 4/7) and GPS (GPIO 8/9)
+    uint16_t sensorI2CClockKHz; // Sensor bus: 100, 200, 400, 600, 800, 1000 kHz (Default: 400)
+    uint16_t gpsI2CClockKHz;    // GPS bus: 100, 200, 400, 600, 800, 1000 kHz (Default: 400)
+    uint8_t gpsProtocolMode;    // 0=UBX (default), 1=NMEA Debug (Default: 0)
+    
     // ==================== SYSTEM CONFIGURATION ====================
-    uint8_t i2cClockSpeed;  // 0=100kHz, 1=400kHz (Default: 1)
     
     // Main Loop Rate
     uint16_t loopRate;      // Hz: 25, 50, 100, 200 (Default: 100)

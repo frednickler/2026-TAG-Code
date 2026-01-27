@@ -37,6 +37,7 @@ public:
      * @return true if sentence was successfully parsed
      */
     static bool parseSentence(const String& sentence, NMEAData& data);
+    static bool validateChecksum(const String& sentence);
 
 private:
     static bool parseGGA(const String& sentence, NMEAData& data);
@@ -45,7 +46,6 @@ private:
     
     static double parseCoordinate(const String& coord, const String& dir);
     static uint8_t calculateChecksum(const String& sentence);
-    static bool validateChecksum(const String& sentence);
 };
 
 #endif // NMEA_PARSER_H
