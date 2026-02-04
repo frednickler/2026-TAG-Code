@@ -1035,7 +1035,7 @@ void SerialMenu::showOutputModeMenu() {
     
     active = true;  // Prevent update() from consuming our input
     
-    const char* modeName[] = {"DEBUG", "COMPACT", "SILENT"};
+    const char* modeName[] = {"DEBUG", "COMPACT", "SILENT", "RADIO"};
     OutputMode currentMode = SystemSettings::getOutputMode();
     
     Serial.println("\n==== Output Mode ====");
@@ -1044,10 +1044,11 @@ void SerialMenu::showOutputModeMenu() {
     Serial.println("1. DEBUG   - All sensor data");
     Serial.println("2. COMPACT - GPS + Heading only");
     Serial.println("3. SILENT  - No periodic output");
+    Serial.println("4. RADIO   - Radio debug info");
     Serial.println();
     Serial.println("Note: ERROR/WARN messages always display");
     Serial.println("=====================");
-    Serial.print("\nSelect mode (1-3) or [b] to go back: ");
+    Serial.print("\nSelect mode (1-4) or [b] to go back: ");
     
     while(!Serial.available()) { 
         Watchdog::feed(); 
@@ -1058,7 +1059,7 @@ void SerialMenu::showOutputModeMenu() {
     input.trim();
     Serial.println();
     
-    if (input == "1" || input == "2" || input == "3") {
+    if (input == "1" || input == "2" || input == "3" || input == "4") {
         OutputMode newMode = static_cast<OutputMode>(input.toInt() - 1);
         SystemSettings::setOutputMode(newMode);
         Serial.printf("Output mode changed to: %s\n", modeName[static_cast<int>(newMode)]);

@@ -5,14 +5,24 @@ bool Watchdog::initialized = false;
 bool Watchdog::init() {
     DEBUG_INFO("Initializing Watchdog Timer (timeout: %d sec)", WATCHDOG_TIMEOUT_SEC);
     
-    // Initialize Task Watchdog Timer (legacy API for Arduino ESP32)
-    esp_err_t err = esp_task_wdt_init(WATCHDOG_TIMEOUT_SEC, true);  // timeout_s, panic_on_timeout
+    // CRITICAL: Arduino Core 3.x initializes the watchdog by default
+    // We MUST deinitialize it first before we can reinitialize with custom settings
+    esp_task_wdt_deinit();
+    
+    // Now initialize with our custom configuration
+    esp_task_wdt_config_t config = {
+        .timeout_ms = WATCHDOG_TIMEOUT_SEC * 1000,
+        .idle_core_mask = 0,  // Don't watch idle tasks (we'll watch loop task manually)
+        .trigger_panic = true
+    };
+    
+    esp_err_t err = esp_task_wdt_init(&config);
     if (err != ESP_OK) {
         DEBUG_ERROR("Failed to initialize WDT: %d", err);
         return false;
     }
     
-    // Subscribe current task to the watchdog
+    // Subscribe current task (loop task) to the watchdog
     err = esp_task_wdt_add(NULL);  // NULL = current task
     if (err != ESP_OK) {
         DEBUG_ERROR("Failed to add task to WDT: %d", err);
@@ -60,7 +70,12 @@ bool Watchdog::setExtendedTimeout(uint8_t seconds) {
     esp_task_wdt_delete(NULL);
     esp_task_wdt_deinit();
     
-    esp_err_t err = esp_task_wdt_init(seconds, true);
+    esp_task_wdt_config_t config = {
+        .timeout_ms = (uint32_t)(seconds * 1000),
+        .idle_core_mask = 0,
+        .trigger_panic = true
+    };
+    esp_err_t err = esp_task_wdt_init(&config);
     if (err != ESP_OK) {
         DEBUG_ERROR("Failed to reinit WDT with extended timeout: %d", err);
         return false;
@@ -83,7 +98,12 @@ void Watchdog::restoreDefaultTimeout() {
     esp_task_wdt_delete(NULL);
     esp_task_wdt_deinit();
     
-    esp_err_t err = esp_task_wdt_init(WATCHDOG_TIMEOUT_SEC, true);
+    esp_task_wdt_config_t config = {
+        .timeout_ms = WATCHDOG_TIMEOUT_SEC * 1000,
+        .idle_core_mask = 0,
+        .trigger_panic = true
+    };
+    esp_err_t err = esp_task_wdt_init(&config);
     if (err == ESP_OK) {
         esp_task_wdt_add(NULL);
     }

@@ -22,12 +22,13 @@
 // =============================================================================
 
 // I2C Bus 1: Sensors (IMU, Magnetometer, Display)
-// GPIO 4/7 verified working with ICM-20948, BMM350, OLED
+// CONFIRMED by I2C scanner: SDA=GPIO4, SCL=GPIO7
+// Devices detected: 0x14 (BMM350), 0x3C (OLED), 0x68 (ICM-20948)
 #define I2C_SDA_PIN             4   // GPIO 4 (SDA) - Sensor Bus
 #define I2C_SCL_PIN             7   // GPIO 7 (SCL) - Sensor Bus
 
 // I2C Bus 2: GPS Module  
-// GPIO 8/9 are default ESP32-S3 I2C pins, confirmed via scanner
+// GPIO 8/9 are default ESP32-S3 I2C pins
 #define GPS_I2C_SDA_PIN         8   // GPIO 8 (SDA) - GPS Only
 #define GPS_I2C_SCL_PIN         9   // GPIO 9 (SCL) - GPS Only
 

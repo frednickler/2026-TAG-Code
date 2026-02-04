@@ -7,7 +7,8 @@
 enum class OutputMode : uint8_t {
     DEBUG = 0,    // All sensor data + tracking calculations
     COMPACT = 1,  // GPS + Heading + Radio status only
-    SILENT = 2    // No periodic output (errors/warnings only)
+    SILENT = 2,   // No periodic output (errors/warnings only)
+    RADIO = 3     // Radio debug info
 };
 
 // Radio packet mode (USER DECISION: Option A with 2 modes)

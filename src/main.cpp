@@ -177,13 +177,13 @@ void loop() {
         uint32_t txInterval = 1000 / txRate;
         if (currentTime - lastTagTx >= txInterval) {
             lastTagTx = currentTime;
-            if (GPSManager::hasFix()) {
-                RadioManager::sendTagData(
-                    GPSManager::getLatitude(),
-                    GPSManager::getLongitude(),
-                    (uint16_t)IMUManager::getHeading()
-                );
-            }
+            // Send data - gpsValid is auto-detected in RadioManager
+            RadioManager::sendTagData(
+                GPSManager::getLatitude(),
+                GPSManager::getLongitude(),
+                (uint16_t)IMUManager::getHeading(),
+                GPSManager::hasFix()
+            );
         }
     }
     
@@ -238,6 +238,59 @@ void loop() {
                 } else {
                     DEBUG_INFO("GPS: Not Detected | Hdg: %.0f°", heading);
                 }
+            }
+            // RADIO mode: Radio debug info
+            else if (mode == OutputMode::RADIO) {
+                Serial.println("\n========== TAG RADIO DEBUG ==========");
+                
+                // Radio status
+                Serial.printf("Radio: %s | Role: TAG (Transmitter)\n", 
+                             RadioManager::isEnabled() ? "ENABLED" : "DISABLED");
+                
+                if (RadioManager::isEnabled()) {
+                    uint8_t mac[6];
+                    RadioManager::getMyMAC(mac);
+                    Serial.printf("My MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+                    
+                    RadioManager::getTargetMAC(mac);
+                    Serial.printf("Target: %02X:%02X:%02X:%02X:%02X:%02X %s\n",
+                                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+                                 RadioManager::isBroadcast() ? "(BROADCAST)" : "");
+                    
+                    RuntimeConfig& cfg = SystemSettings::getConfig();
+                    Serial.printf("Channel: %d | TX Rate: %d Hz | Power: ", 
+                                 cfg.radioChannel, cfg.radioTagTxRate);
+                    
+                    const char* powerStr[] = {"LOW", "MED", "HIGH"};
+                    Serial.println(powerStr[cfg.radioTxPower < 3 ? cfg.radioTxPower : 2]);
+                    
+                    Serial.printf("Packets Sent: %lu | Lost: %lu\n",
+                                 RadioManager::getPacketsSent(),
+                                 RadioManager::getPacketsLost());
+                }
+                
+                // GPS status (required for transmission)
+                Serial.println("---");
+                if (GPSManager::hasFix()) {
+                    Serial.printf("GPS: FIX | Pos: %.6f, %.6f\n",
+                                 GPSManager::getLatitude(), GPSManager::getLongitude());
+                    Serial.printf("     %d sats | %.1f m/s | Hdg: %d°\n",
+                                 GPSManager::getSatelliteCount(),
+                                 GPSManager::getSpeed(),
+                                 (int)GPSManager::getHeading());
+                    Serial.println("✓ TRANSMITTING (GPS fix acquired)");
+                } else if (GPSManager::isAvailable()) {
+                    Serial.printf("GPS: NO FIX (%d sats visible)\n", 
+                                 GPSManager::getSatelliteCount());
+                    Serial.println("⚠ NOT TRANSMITTING (waiting for fix)");
+                } else {
+                    Serial.println("GPS: ERROR (not detected)");
+                    Serial.println("✗ NOT TRANSMITTING");
+                }
+                
+                Serial.printf("IMU Heading: %.1f°\n", IMUManager::getHeading());
+                Serial.println("=====================================");
             }
             // DEBUG mode: Full sensor data
             else {
